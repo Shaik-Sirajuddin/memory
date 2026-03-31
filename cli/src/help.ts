@@ -34,7 +34,7 @@ export function agentInitHelp(): string {
     "  mem agent init <name>",
     "",
     "Behavior:",
-    "  - Requires .memory in the current directory context.",
+    "  - Requires .memory in current or parent directories.",
     "  - Creates:",
     "    .memory/agents/<name>/entry/instructions",
     "    .memory/agents/<name>/entry/tasks",

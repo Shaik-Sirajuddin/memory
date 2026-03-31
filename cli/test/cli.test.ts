@@ -70,6 +70,32 @@ test("agent init creates structure when .memory exists", async () => {
   assert.match(buffers.stdout.join("\n"), /Initialized agent 'cli'/);
 });
 
+test("agent init skips when agent already exists", async () => {
+  const cwd = await makeTempDir("mem-cli-cmd-agent-noop-");
+  await mkdir(path.join(cwd, ".memory"), { recursive: true });
+  const buffers = createBuffers();
+
+  const first = await runCli(["agent", "init", "cli"], buffers.io, { cwd: () => cwd });
+  const second = await runCli(["agent", "init", "cli"], buffers.io, { cwd: () => cwd });
+
+  assert.equal(first, 0);
+  assert.equal(second, 0);
+  assert.match(buffers.stdout.join("\n"), /init skipped/);
+});
+
+test("agent init resolves parent .memory from nested path", async () => {
+  const root = await makeTempDir("mem-cli-cmd-agent-parent-");
+  const nested = path.join(root, "nested", "deeper");
+  await mkdir(path.join(root, ".memory"), { recursive: true });
+  await mkdir(nested, { recursive: true });
+  const buffers = createBuffers();
+
+  const code = await runCli(["agent", "init", "test"], buffers.io, { cwd: () => nested });
+
+  assert.equal(code, 0);
+  assert.match(buffers.stdout.join("\n"), /Initialized agent 'test'/);
+});
+
 test("init command no-ops when parent already has .memory", async () => {
   const root = await makeTempDir("mem-cli-cmd-init-");
   const cwd = path.join(root, "nested");

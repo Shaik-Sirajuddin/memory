@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, lstat, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { findMemoryInParents, initAgent, initMemory } from "../src/memory.js";
+import { findMemoryInParents, initAgent, initMemory, resolveActiveMemory } from "../src/memory.js";
 
 const tmpDirs: string[] = [];
 
@@ -31,6 +31,16 @@ test("findMemoryInParents returns nearest parent .memory", async () => {
 
   const found = await findMemoryInParents(nested);
   assert.equal(found, path.join(root, ".memory"));
+});
+
+test("resolveActiveMemory finds .memory from nested directory", async () => {
+  const root = await makeTempDir("mem-cli-resolve-");
+  const nested = path.join(root, "a", "b", "c");
+  await mkdir(path.join(root, ".memory"), { recursive: true });
+  await mkdir(nested, { recursive: true });
+
+  const resolved = await resolveActiveMemory(nested);
+  assert.equal(resolved, path.join(root, ".memory"));
 });
 
 test("initMemory initializes local .memory outside worktree", async () => {
@@ -95,7 +105,7 @@ test("initMemory creates root memory and cwd symlink in worktree mode", async ()
   assert.equal(stat.isSymbolicLink(), true);
 });
 
-test("initAgent requires .memory in current directory", async () => {
+test("initAgent requires .memory in current or parent directories", async () => {
   const cwd = await makeTempDir("mem-cli-agent-missing-");
 
   await assert.rejects(() => initAgent(cwd, "cli"), /Run `mem init` first/);
@@ -119,4 +129,26 @@ test("initAgent creates required directories", async () => {
     const stat = await lstat(dirPath);
     assert.equal(stat.isDirectory(), true);
   }
+});
+
+test("initAgent no-ops when agent already exists", async () => {
+  const cwd = await makeTempDir("mem-cli-agent-noop-");
+  await mkdir(path.join(cwd, ".memory", "agents", "cli"), { recursive: true });
+
+  const result = await initAgent(cwd, "cli");
+  assert.equal(result.status, "noop");
+  assert.match(result.message, /init skipped/);
+});
+
+test("initAgent resolves parent .memory when called from nested path", async () => {
+  const root = await makeTempDir("mem-cli-agent-parent-");
+  const nested = path.join(root, "pkg", "sub");
+  await mkdir(path.join(root, ".memory"), { recursive: true });
+  await mkdir(nested, { recursive: true });
+
+  const result = await initAgent(nested, "cli");
+  assert.equal(result.status, "initialized");
+
+  const stat = await lstat(path.join(root, ".memory", "agents", "cli", "state"));
+  assert.equal(stat.isDirectory(), true);
 });

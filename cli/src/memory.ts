@@ -34,6 +34,10 @@ export interface InitMemoryOptions {
   templateContent?: string;
 }
 
+export async function resolveActiveMemory(cwd: string): Promise<string | null> {
+  return findMemoryInParents(cwd);
+}
+
 export async function findMemoryInParents(startDir: string): Promise<string | null> {
   let cursor = path.resolve(startDir);
 
@@ -53,7 +57,7 @@ export async function findMemoryInParents(startDir: string): Promise<string | nu
 
 export async function initMemory(options: InitMemoryOptions): Promise<InitMemoryResult> {
   const cwd = path.resolve(options.cwd);
-  const existingMemory = await findMemoryInParents(cwd);
+  const existingMemory = await resolveActiveMemory(cwd);
   if (existingMemory) {
     return {
       status: "noop",
@@ -104,7 +108,7 @@ export async function initMemory(options: InitMemoryOptions): Promise<InitMemory
 }
 
 export interface InitAgentResult {
-  status: "initialized";
+  status: "initialized" | "noop";
   message: string;
   agentPath: string;
 }
@@ -117,12 +121,20 @@ export async function initAgent(cwd: string, name: string): Promise<InitAgentRes
     throw new Error("Agent name contains invalid characters. Use letters, numbers, dot, underscore, or dash.");
   }
 
-  const cwdMemoryPath = path.join(path.resolve(cwd), ".memory");
-  if (!(await pathExists(cwdMemoryPath))) {
-    throw new Error(".memory was not found in the current directory. Run `mem init` first.");
+  const activeMemoryPath = await resolveActiveMemory(cwd);
+  if (!activeMemoryPath) {
+    throw new Error(".memory was not found in the current directory or parent directories. Run `mem init` first.");
   }
 
-  const agentRoot = path.join(cwdMemoryPath, "agents", name);
+  const agentRoot = path.join(activeMemoryPath, "agents", name);
+  if (await pathExists(agentRoot)) {
+    return {
+      status: "noop",
+      message: `Agent '${name}' already exists at ${agentRoot}; init skipped.`,
+      agentPath: agentRoot,
+    };
+  }
+
   const requiredDirs = [
     path.join(agentRoot, "entry", "instructions"),
     path.join(agentRoot, "entry", "tasks"),
@@ -155,7 +167,7 @@ async function isInsideWorktree(cwd: string, runGit: GitRunner): Promise<boolean
 }
 
 async function loadTemplateContent(cwd: string): Promise<string> {
-  const existingMemoryDir = await findMemoryInParents(cwd);
+  const existingMemoryDir = await resolveActiveMemory(cwd);
   if (!existingMemoryDir) {
     return FALLBACK_MEMORY_YAML;
   }
