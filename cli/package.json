@@ -1,0 +1,26 @@
+{
+  "name": "mem",
+  "version": "0.1.0",
+  "description": "Memory bootstrap CLI",
+  "type": "module",
+  "bin": {
+    "mem": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "tsx --test test/**/*.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}
