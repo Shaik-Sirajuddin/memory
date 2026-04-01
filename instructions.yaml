@@ -1,0 +1,24 @@
+-task: 
+ instructions: 
+ - mem init  
+ - accept an optional <repo url> to set tracking 
+ - if valid repo url initialize from remote 
+ - else initialize a empty git repositoy when not exists 
+ - seed the memory irrespective or remote repo or local 
+ - run : git submodule add <repo_url>|memory ROOT_DIR
+
+-task: 
+ name: mem-fetch
+ instructions: 
+ - params list of active agent names , read from ROOT_DIR/memory.local>agents store as local_agents
+ - step 1 clonee use git sparse-checkout only root files  
+ - default read from agent-team.md from root folder as a dependency graph where each agent has a passive(read) dependent , active(write) dependent agents 
+ - parse dependency graph to prepare a list of passive , active for local_agents
+ - passive_agents > agents/${NAME}/generated , active_agents > agents/${NAME}/* clones these with sparse-checkout 
+#  - after  read config.yaml file and parse default>agents and select for active list  
+#  - for all existing cloned agents from step-1 , read config.yaml to depends>agents>active list and select all , depends>agents>passive maintain a passive list  
+#  - run git sparse-checkout to
+-task: 
+ name: changeset
+ instructions:
+ - worfklow  

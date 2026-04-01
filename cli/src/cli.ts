@@ -1,6 +1,10 @@
 import process from "node:process";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { agentInitHelp, initHelp, rootHelp } from "./help.js";
-import { initAgent, initMemory } from "./memory.js";
+import { fetchMemory, initAgent, initMemory, ROOT_DIR } from "./memory.js";
 
 export interface CliIO {
   stdout: (message: string) => void;
@@ -9,6 +13,7 @@ export interface CliIO {
 
 export interface CliContext {
   cwd: () => string;
+  runGit?: (args: string[], cwd: string) => Promise<string>;
 }
 
 const DEFAULT_IO: CliIO = {
@@ -19,6 +24,7 @@ const DEFAULT_IO: CliIO = {
 const DEFAULT_CONTEXT: CliContext = {
   cwd: () => process.cwd(),
 };
+const execFileAsync = promisify(execFile);
 
 export async function runCli(
   args: string[],
@@ -39,8 +45,30 @@ export async function runCli(
     }
 
     try {
-      const result = await initMemory({ cwd: context.cwd() });
-      io.stdout(result.message);
+      const cwd = context.cwd();
+      const runGit = context.runGit ?? defaultGitRunner;
+      const [repoUrl] = rest;
+      const notes: string[] = [];
+
+      await ensureLocalGitRepo(cwd, runGit, notes);
+
+      if (repoUrl && isValidRepoUrl(repoUrl)) {
+        const repoRoot = (await runGit(["rev-parse", "--show-toplevel"], cwd)).trim();
+        if (!repoRoot) {
+          throw new Error("Failed to resolve git repository root.");
+        }
+
+        const submodulePath = path.join(repoRoot, ROOT_DIR);
+        if (!(await pathExists(submodulePath))) {
+          await runGit(["submodule", "add", repoUrl, ROOT_DIR], repoRoot);
+          notes.push(`Added submodule ${repoUrl} at ${ROOT_DIR}.`);
+        }
+      } else if (repoUrl) {
+        notes.push(`Ignored invalid repo url '${repoUrl}'.`);
+      }
+
+      const result = await initMemory({ cwd, runGit });
+      io.stdout([...notes, result.message].join(" ").trim());
       return 0;
     } catch (error) {
       io.stderr(`init failed: ${errorMessage(error)}`);
@@ -50,6 +78,22 @@ export async function runCli(
 
   if (command === "agent") {
     return runAgentCommand(rest, io, context);
+  }
+
+  if (command === "fetch") {
+    if (rest.includes("--help") || rest.includes("-h")) {
+      io.stdout(fetchHelp());
+      return 0;
+    }
+
+    try {
+      const result = await fetchMemory(context.cwd(), rest, context.runGit ?? defaultGitRunner);
+      io.stdout(result.message);
+      return 0;
+    } catch (error) {
+      io.stderr(`fetch failed: ${errorMessage(error)}`);
+      return 1;
+    }
   }
 
   io.stderr(`Unknown command: ${command}`);
@@ -105,7 +149,26 @@ function resolveHelp(args: string[]): string {
     return agentInitHelp();
   }
 
+  if (args[0] === "fetch") {
+    return fetchHelp();
+  }
+
   return rootHelp();
+}
+
+function fetchHelp(): string {
+  return [
+    "Usage:",
+    "  mem fetch [agent_name ...]",
+    "",
+    "Behavior:",
+    `  - Requires ${ROOT_DIR} in current or parent directories.`,
+    "  - If no agent names are passed, reads local agents from memory.local (agents).",
+    "  - Reads dependency graph from agent-team.md in memory root.",
+    "  - Uses git sparse-checkout:",
+    "    active deps -> agents/<name>",
+    "    passive deps -> agents/<name>/generated",
+  ].join("\n");
 }
 
 function errorMessage(error: unknown): string {
@@ -113,4 +176,48 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+async function ensureLocalGitRepo(
+  cwd: string,
+  runGit: (args: string[], cwd: string) => Promise<string>,
+  notes: string[],
+): Promise<void> {
+  let insideWorktree = false;
+  try {
+    insideWorktree = (await runGit(["rev-parse", "--is-inside-work-tree"], cwd)).trim() === "true";
+  } catch {
+    insideWorktree = false;
+  }
+
+  if (!insideWorktree) {
+    await runGit(["init"], cwd);
+    notes.push(`Initialized git repository at ${cwd}.`);
+  }
+}
+
+function isValidRepoUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "ssh:" || parsed.protocol === "git:") {
+      return true;
+    }
+  } catch {
+    // fall through to SCP-like git remotes below
+  }
+
+  return /^[^@\s]+@[^:\s]+:.+/.test(value);
+}
+
+function defaultGitRunner(args: string[], cwd: string): Promise<string> {
+  return execFileAsync("git", args, { cwd }).then((res) => res.stdout);
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.lstat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
