@@ -127,7 +127,8 @@ async function runAgentCommand(args: string[], io: CliIO, context: CliContext): 
   }
 
   try {
-    const result = await initAgent(context.cwd(), name);
+    const runGit = context.runGit ?? defaultGitRunner;
+    const result = await initAgent(context.cwd(), name, runGit);
     io.stdout(result.message);
     return 0;
   } catch (error) {

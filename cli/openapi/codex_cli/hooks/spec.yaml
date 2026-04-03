@@ -1,0 +1,220 @@
+name: CodexHooks
+type: lifecycle_hooks
+spec_version: 1.1
+
+source:
+  official_docs: https://developers.openai.com/codex/hooks
+  schema_repo: https://github.com/Shaik-Sirajuddin/codex/tree/main/codex-rs/hooks/schema/generated
+
+# ============================================================
+# LOCATION
+# ============================================================
+locations:
+  project:
+    path: <repo>/.codex/hooks.json
+    precedence: highest
+
+  global:
+    path: ~/.codex/hooks.json
+    precedence: fallback
+
+# ============================================================
+# SCHEMA INDEX (YOUR FILES)
+# ============================================================
+schemas:
+
+  PostToolUse:
+    input: ./post-tool-use.command.input.schema.json
+    output: ./post-tool-use.command.output.schema.json
+
+  PreToolUse:
+    input: ./pre-tool-use.command.input.schema.json
+    output: ./pre-tool-use.command.output.schema.json
+
+  SessionStart:
+    input: ./session-start.command.input.schema.json
+    output: ./session-start.command.output.schema.json
+
+  Stop:
+    input: ./stop.command.input.schema.json
+    output: ./stop.command.output.schema.json
+
+  UserPromptSubmit:
+    input: ./user-prompt-submit.command.input.schema.json
+    output: ./user-prompt-submit.command.output.schema.json
+
+# ============================================================
+# EVENTS
+# ============================================================
+events:
+
+  - name: SessionStart
+    phase: pre
+    schema_ref: SessionStart
+    description: Triggered when session initializes
+
+  - name: UserPromptSubmit
+    phase: pre
+    schema_ref: UserPromptSubmit
+    description: Triggered before prompt execution (primary prompt injection point)
+
+  - name: PreToolUse
+    phase: pre
+    schema_ref: PreToolUse
+    description: Triggered before tool invocation
+
+  - name: PostToolUse
+    phase: post
+    schema_ref: PostToolUse
+    description: Triggered after tool execution
+
+  - name: Stop
+    phase: post
+    schema_ref: Stop
+    description: Triggered after agent completes response
+
+# ============================================================
+# HOOK CONFIG STRUCTURE
+# ============================================================
+hook_config:
+
+  file: hooks.json
+
+  schema:
+    type: object
+    required: [hooks]
+
+    properties:
+      hooks:
+        type: array
+        items:
+          type: object
+          required: [event, command]
+
+          properties:
+
+            event:
+              type: string
+              enum:
+                - SessionStart
+                - UserPromptSubmit
+                - PreToolUse
+                - PostToolUse
+                - Stop
+
+            command:
+              type: string
+              description: Executable/binary to invoke
+
+            args:
+              type: array
+              items: string
+
+            env:
+              type: object
+
+            timeout_ms:
+              type: integer
+
+            enabled:
+              type: boolean
+              default: true
+
+# ============================================================
+# EXECUTION CONTRACT (IMPORTANT)
+# ============================================================
+execution_contract:
+
+  input:
+    description: |
+      JSON payload passed to command via STDIN
+    schema_source: schemas.<event>.input
+
+  output:
+    description: |
+      JSON payload returned via STDOUT
+    schema_source: schemas.<event>.output
+
+  transport:
+    input: stdin
+    output: stdout
+
+# ============================================================
+# PROJECT EXAMPLE (MEM AGENT)
+# ============================================================
+examples:
+
+  - name: mem_agent_integration
+    path: <repo>/.codex/hooks.json
+
+    content: |
+      {
+        "hooks": [
+          {
+            "event": "UserPromptSubmit",
+            "command": "mem-agent",
+            "args": ["pre"]
+          },
+          {
+            "event": "PostToolUse",
+            "command": "mem-agent",
+            "args": ["post"]
+          },
+          {
+            "event": "Stop",
+            "command": "mem-agent",
+            "args": ["finalize"]
+          }
+        ]
+      }
+
+# ============================================================
+# EXECUTION FLOW
+# ============================================================
+flow:
+
+  - SessionStart
+  - UserPromptSubmit
+  - PreToolUse
+  - PostToolUse
+  - Stop
+
+# ============================================================
+# DESIGN NOTES
+# ============================================================
+design:
+
+  schema_driven: true
+  transport: stdio_json
+  strongly_typed: true
+
+  key_capability:
+    - prompt interception via UserPromptSubmit
+    - tool lifecycle interception
+    - structured IO via schema
+
+  recommendation:
+    - validate all hook IO against schema
+    - build typed SDK around schema index
+    - use UserPromptSubmit for prompt augmentation
+    - use PostToolUse for persistence/logging
+
+# ============================================================
+# LIMITATIONS
+# ============================================================
+limitations:
+
+  - PreToolUse may not be fully stable
+  - No native retry mechanism
+  - No hook dependency graph
+  - Execution order is linear
+
+# ============================================================
+# FUTURE EXTENSIONS
+# ============================================================
+future:
+
+  - parallel hook execution
+  - hook chaining
+  - remote hook execution
+  - policy enforcement layer

@@ -156,6 +156,32 @@ test("initAgent creates required directories", async () => {
   }
 });
 
+test("initAgent populates .codex/hooks.json with mem hooks", async () => {
+  const cwd = await makeTempDir("mem-cli-agent-hooks-");
+  await mkdir(path.join(cwd, ROOT_DIR), { recursive: true });
+
+  await initAgent(cwd, "cli");
+
+  const hooksPath = path.join(cwd, ".codex", "hooks.json");
+  const hooksRaw = await readFile(hooksPath, "utf8");
+  const hooks = JSON.parse(hooksRaw);
+  assert.ok(Array.isArray(hooks.hooks));
+
+  const hookByEvent = new Map(hooks.hooks.map((entry: { event: string }) => [entry.event, entry]));
+  const required = [
+    { event: "UserPromptSubmit", command: "mem", args: ["agent", "pre-execute"] },
+    { event: "PostToolUse", command: "mem", args: ["agent", "post-execute"] },
+    { event: "Stop", command: "mem", args: ["agent", "finalize"] },
+  ];
+
+  for (const expectation of required) {
+    const actual = hookByEvent.get(expectation.event);
+    assert.ok(actual, `hook ${expectation.event} exists`);
+    assert.equal(actual.command, expectation.command);
+    assert.deepEqual(actual.args, expectation.args);
+  }
+});
+
 test("initAgent no-ops when agent already exists", async () => {
   const cwd = await makeTempDir("mem-cli-agent-noop-");
   await mkdir(path.join(cwd, ROOT_DIR, "agents", "cli"), { recursive: true });

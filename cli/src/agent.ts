@@ -1,20 +1,13 @@
-export interface CodeSession {
-  prompt(text: string): Promise<string>;
-  stop(): Promise<void>;
-}
+import { CodexConnector } from "./connectors/codexConnector.js";
+import {
+  AgentOperator,
+  CodeAgent,
+  CodeAgentType,
+  CodeSession,
+} from "./interfaces.js";
 
-export interface CodeAgent {
-  startSession(interactive: boolean, prompt?: string): Promise<CodeSession>;
-  resumeSession(id: string): Promise<CodeSession>;
-  listSessions(): Promise<string[]>;
-}
-
-export type CodeAgentType = "gemini" | "codex" | "claude";
-
-export interface AgentOperator {
-  launchAgent(name: string, type: CodeAgentType): Promise<CodeSession>;
-  switchAgent(type: CodeAgentType): Promise<CodeSession>;
-  listAgents(project: string, activeOnly: boolean): Promise<string[]>;
+export interface AgentOperatorOptions {
+  projectRoot?: string;
 }
 
 export class GeminiAgent implements CodeAgent {
@@ -45,31 +38,12 @@ class GeminiSession implements CodeSession {
   }
 }
 
-export class CodexAgent implements CodeAgent {
-  async startSession(
-    interactive: boolean,
-    prompt?: string,
-  ): Promise<CodeSession> {
-    console.log(
-      `Starting Codex session (interactive: ${interactive}, prompt: ${prompt})`,
-    );
-    return new CodexSession();
-  }
-  async resumeSession(id: string): Promise<CodeSession> {
-    console.log(`Resuming Codex session ${id}`);
-    return new CodexSession();
-  }
-  async listSessions(): Promise<string[]> {
-    return ["codex-session-1"];
-  }
-}
-
-class CodexSession implements CodeSession {
+class ClaudeSession implements CodeSession {
   async prompt(text: string): Promise<string> {
-    return `Codex response to: ${text}`;
+    return `Claude response to: ${text}`;
   }
   async stop(): Promise<void> {
-    console.log("Codex session stopped.");
+    console.log("Claude session stopped.");
   }
 }
 
@@ -92,37 +66,42 @@ export class ClaudeAgent implements CodeAgent {
   }
 }
 
-class ClaudeSession implements CodeSession {
-  async prompt(text: string): Promise<string> {
-    return `Claude response to: ${text}`;
-  }
-  async stop(): Promise<void> {
-    console.log("Claude session stopped.");
-  }
-}
-
 export class DefaultAgentOperator implements AgentOperator {
-  private agents: Map<CodeAgentType, CodeAgent> = new Map();
+  private connectors: Map<CodeAgentType, CodeAgent> = new Map();
+  private activeConnector?: CodeAgentType;
+  private projectRoot: string;
 
-  constructor() {
-    this.agents.set("gemini", new GeminiAgent());
-    this.agents.set("codex", new CodexAgent());
-    this.agents.set("claude", new ClaudeAgent());
+  constructor(options: AgentOperatorOptions = {}) {
+    this.projectRoot = options.projectRoot ?? process.cwd();
+    this.connectors.set("gemini", new GeminiAgent());
+    this.connectors.set("codex", new CodexConnector({ projectRoot: this.projectRoot }));
+    this.connectors.set("claude", new ClaudeAgent());
+  }
+
+  private requireConnector(type: CodeAgentType): CodeAgent {
+    const connector = this.connectors.get(type);
+    if (!connector) {
+      throw new Error(`Unknown agent type: ${type}`);
+    }
+    return connector;
   }
 
   async launchAgent(name: string, type: CodeAgentType): Promise<CodeSession> {
-    const agent = this.agents.get(type);
-    if (!agent) throw new Error(`Unknown agent type: ${type}`);
-    return agent.startSession(true, `Hello, I am ${name}`);
+    const connector = this.requireConnector(type);
+    this.activeConnector = type;
+    return connector.startSession(true, `Hello, I am ${name}`);
   }
 
   async switchAgent(type: CodeAgentType): Promise<CodeSession> {
-    const agent = this.agents.get(type);
-    if (!agent) throw new Error(`Unknown agent type: ${type}`);
-    return agent.startSession(true);
+    const connector = this.requireConnector(type);
+    this.activeConnector = type;
+    return connector.startSession(true);
   }
 
   async listAgents(project: string, activeOnly: boolean): Promise<string[]> {
-    return Array.from(this.agents.keys());
+    if (activeOnly && this.activeConnector) {
+      return [this.activeConnector];
+    }
+    return [...this.connectors.keys()];
   }
 }

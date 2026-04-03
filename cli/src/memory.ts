@@ -1,9 +1,6 @@
-import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { GitRunner, defaultGitRunner } from "./gitRunner.js";
 export const ROOT_DIR = "memory";
 const FALLBACK_MEMORY_YAML = `apiVersion: memory.v1
 definitions:
@@ -18,8 +15,6 @@ instructions:
   - ground your local file reading to docs/ , agent_folder , co_agent_folder
   - record your work progress in agent_folder/state/ after each prompt execution under version files with .md
 `;
-
-export type GitRunner = (args: string[], cwd: string) => Promise<string>;
 
 export interface InitMemoryResult {
   status: "initialized" | "noop";
@@ -134,7 +129,11 @@ export interface FetchMemoryResult {
   sparsePaths: string[];
 }
 
-export async function initAgent(cwd: string, name: string): Promise<InitAgentResult> {
+export async function initAgent(
+  cwd: string,
+  name: string,
+  runGit?: GitRunner,
+): Promise<InitAgentResult> {
   if (!name.trim()) {
     throw new Error("Agent name is required. Usage: mem agent init <name>");
   }
@@ -146,6 +145,10 @@ export async function initAgent(cwd: string, name: string): Promise<InitAgentRes
   if (!activeMemoryPath) {
     throw new Error(`${ROOT_DIR} was not found in the current directory or parent directories. Run \`mem init\` first.`);
   }
+
+  const gitRunner = runGit ?? defaultGitRunner;
+  const repoRoot = await resolveRepoRoot(cwd, gitRunner);
+  await ensureCodexHooks(repoRoot);
 
   const agentRoot = path.join(activeMemoryPath, "agents", name);
   if (await pathExists(agentRoot)) {
@@ -240,10 +243,6 @@ export async function fetchMemory(
     activeAgents,
     sparsePaths,
   };
-}
-
-export function defaultGitRunner(args: string[], cwd: string): Promise<string> {
-  return execFileAsync("git", args, { cwd }).then((res) => res.stdout);
 }
 
 async function isInsideWorktree(cwd: string, runGit: GitRunner): Promise<boolean> {
@@ -417,4 +416,81 @@ async function pathExists(targetPath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+const REQUIRED_CODEX_HOOKS: CodexHookEntry[] = [
+  { event: "UserPromptSubmit", command: "mem", args: ["agent", "pre-execute"] },
+  { event: "PostToolUse", command: "mem", args: ["agent", "post-execute"] },
+  { event: "Stop", command: "mem", args: ["agent", "finalize"] },
+];
+
+interface CodexHookEntry {
+  event: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  timeout_ms?: number;
+  enabled?: boolean;
+}
+
+async function ensureCodexHooks(repoRoot: string): Promise<void> {
+  const hooksDir = path.join(repoRoot, ".codex");
+  await fs.mkdir(hooksDir, { recursive: true });
+  const hooksFile = path.join(hooksDir, "hooks.json");
+
+  let currentHooks: CodexHookEntry[] = [];
+  if (await pathExists(hooksFile)) {
+    try {
+      const raw = await fs.readFile(hooksFile, "utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed?.hooks)) {
+        currentHooks = parsed.hooks;
+      }
+    } catch {
+      currentHooks = [];
+    }
+  }
+
+  let mutated = false;
+  for (const required of REQUIRED_CODEX_HOOKS) {
+    const existing = currentHooks.find((entry) => entry.event === required.event && entry.command === required.command);
+    if (existing) {
+      if (!arraysEqual(existing.args, required.args) || existing.enabled !== true) {
+        existing.args = required.args;
+        existing.enabled = true;
+        mutated = true;
+      }
+      continue;
+    }
+    currentHooks.push({ ...required, enabled: true });
+    mutated = true;
+  }
+
+  if (mutated) {
+    const payload = { hooks: currentHooks };
+    await fs.writeFile(hooksFile, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  }
+}
+
+function arraysEqual(a?: string[], b?: string[]): boolean {
+  if (!a && !b) {
+    return true;
+  }
+  if (!a || !b || a.length !== b.length) {
+    return false;
+  }
+  return a.every((value, index) => value === b[index]);
+}
+
+async function resolveRepoRoot(cwd: string, runGit: GitRunner): Promise<string> {
+  try {
+    const output = await runGit(["rev-parse", "--show-toplevel"], cwd);
+    const trimmed = output.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  } catch {
+    // ignore
+  }
+  return cwd;
 }
