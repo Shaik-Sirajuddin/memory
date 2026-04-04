@@ -38,7 +38,7 @@ type DeleteHookParams struct {
 }
 
 type HookManager interface {
-	Capabilities() (*Capabilities, error)
+	SupportedHooks() (*Capabilities, error)
 
 	Register(RegisterHookParams) error
 	GetRegisteredHooks() []*HookData
