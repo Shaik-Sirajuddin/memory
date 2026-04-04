@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "before-tool.command.output",
+  "type": "object",
+  "properties": {
+    "continue": { "type": "boolean", "default": true },
+    "stopReason": { "type": "string", "default": null },
+    "suppressOutput": { "type": "boolean", "default": false },
+    "systemMessage": { "type": "string", "default": null },
+    "decision": { "enum": ["allow", "deny", "block"], "type": "string", "default": null },
+    "reason": { "type": "string", "default": null },
+    "hookSpecificOutput": {
+      "type": "object",
+      "description": "tool_input merges with model arguments to modify the tool call",
+      "properties": {
+        "tool_input": { "type": "object", "description": "Overrides/merges with original tool_input" }
+      }
+    }
+  }
+}
