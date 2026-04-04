@@ -1,6 +1,9 @@
 package codeagent
 
-import "github.com/Shaik-Sirajuddin/memory/connector/sandbox"
+import (
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
+	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
+)
 
 type Provider string
 
@@ -46,6 +49,11 @@ type GetSessionConfigParams struct {
 type GetSessionConfigResult struct {
 }
 
+type CodeAgentInfo struct {
+	Provider Provider
+	Version  string
+}
+
 type UpdateSessionSandboxParams struct {
 	Sandbox *sandbox.Sandbox
 }
@@ -59,42 +67,16 @@ type GetSessionSandboxParams struct {
 type GetSessionSandboxResult struct {
 }
 
-type CodeAgentInfo struct {
-	Provider Provider
-	Version  string
-}
-
 type UserIdentify struct {
 	Authenticated bool
-}
-
-type GetHooksParams struct {
-}
-type GetHooksResult struct {
-}
-
-type HooksCapabalities struct {
-	PreToolUse       bool
-	PrePrompt        bool
-	PostPrompt       bool
-	PostToolUse      bool
-	PreSessionStart  bool
-	PostSessionStart bool
-}
-
-type Capabilities struct {
-	Hooks *HooksCapabalities
-}
-
-// Config denotes
-type Config struct {
-	EnabledHooks HooksCapabalities
 }
 
 // CodeAgent implements Model
 // CodeAgent Provides access to sessions
 // All operations of CodeAgent are concurrent safe
 type CodeAgent interface {
+	hooks.HookIOParser
+	hooks.HookManager
 	// create a non interactive session and return
 	// concurrent safe
 	Create(CreateSessionParams) (*CreateSessionResult, error)
@@ -107,12 +89,7 @@ type CodeAgent interface {
 	GetSessionSandbox(GetSessionSandboxParams) (*GetSessionSandboxResult, error)
 	UpdateSessionSandbox(UpdateSessionSandboxParams) (*UpdateSessionSandboxResult, error)
 
-	GetHooks(GetHooksParams) (GetHooksResult, error)
-	UpdateHooks()
-
 	Info() *CodeAgentInfo
-	Capabilities() (*Capabilities, error)
-	Config() (*Config, error)
 
 	GetUserIdentity() UserIdentify
 	// stop the interactive terminal session for agent

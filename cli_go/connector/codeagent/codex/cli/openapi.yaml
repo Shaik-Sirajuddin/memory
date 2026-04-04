@@ -1,0 +1,221 @@
+name: CodexCLI
+type: interactive_and_exec_cli
+legend:
+  I: interactive_only   # works inside codex TUI session (/ commands)
+  N: non_interactive   # works via CLI/exec mode
+  B: both              # works in both contexts
+version:
+# ============================================================
+# CLI COMMANDS (ENTRYPOINT + NON-INTERACTIVE)
+# ============================================================
+cli_commands:
+
+  - name: codex
+    mode: B
+    category: session
+    description: Start interactive session or run with initial prompt
+    input:
+      args:
+        - prompt: optional string
+      options:
+        - -i / --image: optional file list
+        - -m / --model: optional string
+    output:
+      type: session
+      schema:
+        session_started: boolean
+        initial_prompt_loaded: boolean
+
+  - name: codex exec
+    aliases: [codex e]
+    mode: N
+    category: execution
+    description: Run a single prompt in non-interactive (headless) mode :contentReference[oaicite:0]{index=0}
+    input:
+      args:
+        - prompt: string
+      options:
+        - --json: boolean
+        - -o / --output-last-message: file
+        - --full-auto: boolean
+        - --sandbox: enum [read-only, danger-full-access]
+    output:
+      type: response
+      schema:
+        stdout: string
+        events: optional json_stream
+
+  - name: codex --help
+    mode: N
+    category: system
+    description: Show all commands and flags :contentReference[oaicite:1]{index=1}
+    input: { args: [] }
+    output:
+      type: text
+
+  - name: codex --version
+    mode: N
+    category: system
+    description: Show CLI version
+    input: { args: [] }
+    output:
+      type: string
+
+  - name: codex --login
+    mode: N
+    category: auth
+    description: Authenticate CLI with OpenAI account :contentReference[oaicite:2]{index=2}
+    input: { args: [] }
+    output:
+      type: status
+      schema:
+        authenticated: boolean
+
+  - name: codex --upgrade
+    mode: N
+    category: system
+    description: Upgrade CLI to latest version :contentReference[oaicite:3]{index=3}
+    input: { args: [] }
+    output:
+      type: status
+      schema:
+        upgraded: boolean
+
+  - name: codex --auto-edit
+    mode: N
+    category: configuration
+    description: Start session in auto-edit mode :contentReference[oaicite:4]{index=4}
+
+  - name: codex --full-auto
+    mode: N
+    category: configuration
+    description: Start session in full-auto mode :contentReference[oaicite:5]{index=5}
+
+# ============================================================
+# SESSION MANAGEMENT (NON-INTERACTIVE / CLI-LEVEL)
+# ============================================================
+session_management:
+
+  - name: codex (implicit session start)
+    mode: B
+    description: Launches a new interactive session :contentReference[oaicite:6]{index=6}
+    output:
+      session_id: implicit
+
+  - name: codex exec
+    mode: N
+    description: Stateless execution (no persisted session) :contentReference[oaicite:7]{index=7}
+    output:
+      session: none
+
+  - name: ctrl+c / interrupt
+    mode: I
+    description: Cancel current execution step :contentReference[oaicite:8]{index=8}
+
+# ============================================================
+# SLASH COMMANDS (INTERACTIVE ONLY)
+# ============================================================
+slash_commands:
+
+  - name: /help
+    mode: I
+    category: system
+    description: List all slash commands :contentReference[oaicite:9]{index=9}
+    input: { args: [] }
+    output:
+      type: list
+
+  - name: /clear
+    mode: I
+    category: session
+    description: Clear conversation context :contentReference[oaicite:10]{index=10}
+    input: { args: [] }
+    output:
+      cleared: boolean
+
+  - name: /quit
+    aliases: [/exit]
+    mode: I
+    category: session
+    description: Exit session :contentReference[oaicite:11]{index=11}
+    input: { args: [] }
+    output:
+      exited: boolean
+
+  - name: /mode
+    mode: I
+    category: configuration
+    description: Switch approval mode (suggest, auto-edit, full-auto) :contentReference[oaicite:12]{index=12}
+    input:
+      args:
+        - mode: enum [suggest, auto-edit, full-auto]
+    output:
+      mode: string
+
+  - name: /model
+    mode: I
+    category: configuration
+    description: Change model mid-session :contentReference[oaicite:13]{index=13}
+    input:
+      args:
+        - model: string
+    output:
+      model: string
+
+  - name: /status
+    mode: I
+    category: system
+    description: Show session state (model, tokens, mode) :contentReference[oaicite:14]{index=14}
+    output:
+      type: object
+      schema:
+        model: string
+        mode: string
+        usage: object
+
+  - name: /compact
+    mode: I
+    category: context
+    description: Reduce or optimize context
+    output:
+      compacted: boolean
+
+  - name: /diff
+    mode: I
+    category: workspace
+    description: Show changes made in session
+    output:
+      patch: string
+
+  - name: /review
+    mode: I
+    category: workflow
+    description: Run code review agent
+    output:
+      issues: list
+      suggestions: list
+
+# ============================================================
+# CAPABILITY NOTES
+# ============================================================
+meta:
+  execution_modes:
+    interactive:
+      supports: slash_commands
+      persistent_context: true
+
+    non_interactive:
+      supports: cli_commands
+      persistent_context: false
+      note: |
+        Slash commands are NOT supported in exec mode :contentReference[oaicite:15]{index=15}
+
+  key_differences:
+    - interactive mode = stateful agent session
+    - exec mode = stateless automation pipeline
+    - session persistence is limited compared to Claude CLI
+
+  gaps:
+    - no explicit session list API
+    - no resume session command (CLI-level)
+    - session IDs are mostly internal
