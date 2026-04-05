@@ -1,0 +1,66 @@
+datastore:
+  engine: sqlite
+  # singleton shared with omniagent (same DB file via omniagent/database.GetDB)
+  db: omniagent/database
+
+  tables:
+    - name: workspaces
+      description: Teams / workspaces managed by the operator
+      columns:
+        - name: id
+          type: TEXT
+          constraints: PRIMARY KEY
+          description: UUID for the workspace
+        - name: name
+          type: TEXT
+          constraints: NOT NULL
+          description: Human-readable team/workspace name
+        - name: workspace_dir
+          type: TEXT
+          constraints: NOT NULL UNIQUE
+          description: Absolute path to the workspace directory (maps to sandbox.WorkspaceDir)
+
+  # agents table is owned by omniagent; operator reads it via workspace_dir filter
+  foreign_reads:
+    - table: agents
+      owner: omniagent
+      join: agents.workspace_dir = workspaces.workspace_dir
+      purpose: resolve TeamInfo.Agents count and GetTeamResult.Agents list
+
+store:
+  interface: OperatorStore
+  package: operator/store
+
+  methods:
+    - name: CreateWorkspace
+      input:
+        - name: info
+          type: TeamInfo
+      output: error
+      description: Insert a new workspace row; called by CreateAgent when no workspace exists yet
+
+    - name: GetWorkspace
+      input:
+        - name: id
+          type: string
+      output: "(*TeamInfo, error)"
+      description: Fetch workspace metadata by ID
+
+    - name: ListWorkspaces
+      input: []
+      output: "([]*TeamInfo, error)"
+      description: Return all workspaces; agent count resolved via JOIN on agents table
+
+    - name: DeleteWorkspace
+      input:
+        - name: id
+          type: string
+      output: error
+      description: Remove workspace row; does NOT delete agent rows (memory retained)
+
+    - name: WorkspaceByDir
+      input:
+        - name: dir
+          type: sandbox.WorkspaceDir
+      output: "(*TeamInfo, error)"
+      description: Lookup workspace by directory path; used during CreateAgent to detect existing team
