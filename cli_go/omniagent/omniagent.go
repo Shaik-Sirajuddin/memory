@@ -5,47 +5,61 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
 )
 
-type CodeAgentInfo struct {
-	Name          string
-	Workspace     string
-	ActiveSession *CodeSession
+// Workspace level directory
+const (
+	WORKSPACE_ROOT  = "/ommni"
+	AGENTS_ROOT_DIR = WORKSPACE_ROOT + "/agents"
+	CONFIG_FILE     = "/config.json"
+)
+
+//Example
+//AGENT_DIR       = AGENTS_ROOT_DIR + "agent_name"
+
+type AgentInfo struct {
+	ID           string               `json:"id"`
+	Name         string               `json:"name"`
+	WorkspaceDir sandbox.WorkspaceDir `json:"workspace_dir"`
+	// dir path for agent specific files
+	MemoryDir string `json:"memory_dir"`
 }
 
 type CodeSession struct {
-	Model          *codeagent.Model
-	Idx            int
-	Id             string
-	IsActive       bool
-	Prompts        int
-	LastSyncPrompt int
+	Id             string           `json:"id"`
+	Model          *codeagent.Model `json:"model"`
+	Idx            int              `json:"idx"`
+	IsActive       bool             `json:"is_active"`
+	Prompts        int              `json:"prompts"`
+	LastSyncPrompt int              `json:"last_sync_prompt"`
 }
 
 type PersistentMemory struct {
 	// agent write memory
-	Dir string
 }
 
 type Settings struct {
-	Sandbox      *sandbox.Sandbox
-	DefaultModel *codeagent.Model
+	// Default workspace
+	Sandbox      *sandbox.Sandbox `json:"sandbox"`
+	DefaultModel *codeagent.Model `json:"default_model"`
 }
 
 type Data struct {
-	ActiveWorkSpace *sandbox.Workspace
-	Info            *CodeAgentInfo
-	Settings        *Settings
-	Sessions        []*CodeSession
-	Memory          *PersistentMemory
+	Info *AgentInfo `json:"info"`
+	// Current active workspace
+	ActiveWorkSpace *sandbox.Sandbox `json:"active_workspace"`
+	ActiveSession   *CodeSession     `json:"active_session"`
+	Settings        *Settings        `json:"settings"`
+	Sessions        []*CodeSession   `json:"sessions"`
 }
 
 type UpdateSettingsParams struct {
-	ID       string
-	Settings *Settings
+	ID       string    `json:"id"`
+	Settings *Settings `json:"settings"`
 }
 
 // OmniAgent is active only in one working dir at a time
 // Forking an agent is allowed
 type OmniAgent interface {
+	Data() *Data
 	New()
 	// UpdateSettings updates agent settings , the settings are reflected after completion of an ongoing command execution
 	UpdateSettings(UpdateSettingsParams) error
