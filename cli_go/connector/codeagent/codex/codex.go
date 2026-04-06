@@ -16,6 +16,20 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
 )
 
+type ConfigPaths struct {
+	GlobalConfigDirs    []string
+	WorkspaceConfigDirs []string
+}
+
+var config ConfigPaths = ConfigPaths{
+	GlobalConfigDirs: []string{
+		".codex",
+	},
+	WorkspaceConfigDirs: []string{
+		".codex",
+	},
+}
+
 // logger is the package-level structured logger for the codex connector.
 var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 	Level:     slog.LevelDebug,
@@ -127,6 +141,7 @@ func (a *codexAgent) Capabilities() (*codeagent.Capabilities, error) {
 		Streaming: true, MCPSupport: false, Worktrees: false, Subagents: false,
 	}, nil
 }
+
 // Defaults reads the current defaults from ~/.codex/config.yaml, falling back
 // to in-memory values when the file is absent or a key is missing.
 func (a *codexAgent) Defaults() (*codeagent.Config, error) {
