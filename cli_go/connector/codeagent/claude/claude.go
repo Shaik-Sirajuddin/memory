@@ -13,6 +13,21 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
 )
 
+type ConfigPaths struct {
+	GlobalConfigDirs    []string
+	WorkspaceConfigDirs []string
+}
+
+var Config ConfigPaths = ConfigPaths{
+	GlobalConfigDirs: []string{
+		".claude",
+		".config/claude",
+	},
+	WorkspaceConfigDirs: []string{
+		"./claude",
+	},
+}
+
 // logger is the package-level structured logger for the claude connector.
 var logger = newLogger("claude")
 

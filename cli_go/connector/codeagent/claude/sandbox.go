@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
-	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
 )
 
 // ============================================================
@@ -118,12 +118,6 @@ func (a *claudeAgent) DeleteHook(p hooks.DeleteHookParams) (bool, error) {
 // settings.json sync
 // ============================================================
 
-// claudeSettings mirrors the relevant subset of .claude/settings.json.
-type claudeSettings struct {
-	Hooks map[string][]claudeHookMatcher `json:"hooks,omitempty"`
-	// Other settings fields are preserved via rawExtra during round-trip.
-}
-
 type claudeHookMatcher struct {
 	Matcher string             `json:"matcher,omitempty"`
 	Hooks   []claudeHookEntry  `json:"hooks"`
@@ -215,19 +209,6 @@ func hookDataToEntry(h *hooks.HookData) claudeHookEntry {
 // Sandbox helper
 // ============================================================
 
-// sandboxPermissionMode returns the --permission-mode flag value that best
-// approximates the sandbox policy. Claude Code does not have a --sandbox flag;
-// instead we restrict permissions via the permission mode.
-func sandboxPermissionMode(s *sandbox.Sandbox) codeagent.PermissionMode {
-	if s == nil {
-		return ""
-	}
-	if s.ExtendedPolicy != nil {
-		return codeagent.PermissionAuto
-	}
-	return codeagent.PermissionPlan
-}
-
 // ============================================================
 // Utilities
 // ============================================================
@@ -239,12 +220,12 @@ func copyHooks(src []*hooks.HookData) []*hooks.HookData {
 }
 
 func joinArgs(args []string) string {
-	result := ""
+	var b strings.Builder
 	for i, a := range args {
 		if i > 0 {
-			result += " "
+			b.WriteByte(' ')
 		}
-		result += a
+		b.WriteString(a)
 	}
-	return result
+	return b.String()
 }
