@@ -15,6 +15,20 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
 )
 
+type ConfigPaths struct {
+	GlobalConfigDirs    []string
+	WorkspaceConfigDirs []string
+}
+
+var Config ConfigPaths = ConfigPaths{
+	GlobalConfigDirs: []string{
+		".gemini",
+	},
+	WorkspaceConfigDirs: []string{
+		".gemini",
+	},
+}
+
 // logger is the package-level structured logger for the gemini connector.
 var logger = newLogger("gemini")
 

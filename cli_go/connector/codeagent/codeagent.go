@@ -228,3 +228,15 @@ type CodeAgent interface {
 	// Stop terminates the active interactive session.
 	Stop()
 }
+
+type Settings struct {
+	Provider Provider
+	any
+}
+
+type SettingsResolver interface {
+	GetUserSettings() (*Settings, error)
+	GetWorkspaceSettings(sandbox.WorkspaceDir) (*Settings, error)
+	SaveDefaultSettings(Settings) error
+	WatchDefaultSettings(func(*Settings)) error
+}
