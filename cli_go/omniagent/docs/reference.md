@@ -29,12 +29,36 @@ A persisted code-agent session belonging to an agent.
 ---
 
 ### `Settings`
-Runtime configuration for an agent.
+Runtime configuration for an agent (defined in `omniagent/config`).
+
+| Field | JSON Key | Description |
+|---|---|---|
+| `Model` | `model` | AI model identifier shared across all supported agents |
+| `Timeout` | `timeout` | Per-hook / per-invocation timeout in seconds |
+| `MaxTurns` | `maxTurns` | Maximum agentic turns allowed per prompt execution |
+| `Sandbox` | `sandbox` | Execution sandbox / permission mode (e.g. `read-only`, `danger-full-access`) |
+| `Env` | `env` | Environment variables injected into the agent process |
+| `Hooks` | `hooks` | Lifecycle hook commands mapped by event name |
+| `Theme` | `theme` | UI theme name (e.g. `dark`, `light`, custom theme id) |
+| `Cwd` | `cwd` | Working directory for agent and tool processes |
+| `LogPrompts` | `logPrompts` | Whether user prompts are logged in session output |
+
+### `HookEntry`
+A single hook command registered for a lifecycle event.
+
+| Field | JSON Key | Description |
+|---|---|---|
+| `Command` | `command` | Shell command to run when the hook fires |
+| `Args` | `args` | Additional arguments passed to the command |
+| `Timeout` | `timeout` | Per-hook timeout override (seconds) |
+| `Url` | `url` | HTTP endpoint for webhook-style hooks |
+
+### `Config`
+Agent-level configuration embedding hook capabilities.
 
 | Field | Type | Description |
 |---|---|---|
-| `Sandbox` | `*sandbox.Sandbox` | File-access policy for this agent |
-| `DefaultModel` | `*codeagent.Model` | Model used when no session-level override is set |
+| `Capabilities` | `hooks.Capabilities` | Declares which lifecycle hooks the agent supports |
 
 ---
 
