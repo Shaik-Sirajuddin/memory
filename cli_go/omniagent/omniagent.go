@@ -1,10 +1,10 @@
 package omniagent
 
 import (
-	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
+	"github.com/Shaik-Sirajuddin/memory/omniagent/config"
 )
 
 type ConfigPaths struct {
@@ -52,6 +52,7 @@ type PersistentMemory struct {
 }
 
 type Settings struct {
+	settings config.Settings
 	// Default workspace
 	Sandbox      *sandbox.Sandbox `json:"sandbox"`
 	DefaultModel *codeagent.Model `json:"default_model"`
@@ -67,22 +68,21 @@ type Data struct {
 	Sessions        []*CodeSession   `json:"sessions"`
 }
 
-type UpdateSettingsParams struct {
-	ID       string    `json:"id"`
-	Settings *Settings `json:"settings"`
-}
-
-// OmniAgent is active only in one working dir at a time
-// Forking an agent is allowed
-type OmniAgent interface {
-	Data() *Data
+type OmniAgentActions interface {
+	// New command provision an agent based on defaults with omniagent pre hooks
 	New()
-	// UpdateSettings updates agent settings , the settings are reflected after completion of an ongoing command execution
-	UpdateSettings(UpdateSettingsParams) error
 	// SyncMemory syncronizes session memory to persistant store from current model
 	SyncMemory()
 	// NewCodeSession creates a new session optionally can specify a different provider , model to use
 	NewCodeSession()
+}
+
+// OmniAgent implement [codeagent.SettingsResolver]
+// OmniAgent utilizes codeagents to provision an agent , with its own memory , session management
+type OmniAgent interface {
+	codeagent.CodeAgent
+	OmniAgentActions
+	Data() *Data
 }
 
 type OmniAgentEntrypoint interface {
@@ -92,21 +92,4 @@ type OmniAgentEntrypoint interface {
 	PostToolUse()
 	PreSessionStart()
 	PostSessionStart()
-}
-
-type SettingsResolver interface {
-	*config.OmniConfig
-
-	Get() ([]*codeagent.Settings, error)
-	// GetUnified resolves a merged config file by deduplicationg fields acorss settings
-	GetUnified([]*codeagent.Settings) *Settings
-	// WatchUnified watches all config files and returns the unified settings if any one of config file changes
-	// applies any addition to one of config to all other configs , deletions are not propogated unless removed from omniagent.settings
-	// modifying multiple files is concurrent safe
-	WatchUnified(config, callback func(*Settings))
-	// Apply Unified applies the settings across all codeagent configs
-	ApplyUnified(*Settings) error
-}
-
-type SettingsWatcher interface {
 }
