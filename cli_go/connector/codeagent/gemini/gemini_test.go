@@ -57,7 +57,11 @@ func TestPermissionMappings(t *testing.T) {
 
 func TestArgsBuilding(t *testing.T) {
 	t.Run("ExecArgsShouldIncludeExpectedFlags", func(t *testing.T) {
-		sbx := &sandbox.Sandbox{ExtendedPolicy: &sandbox.ExtendedPolicy{}}
+		sbx := &sandbox.Sandbox{
+			AgentPolicy: &sandbox.Policy{
+				FSPolicy: sandbox.FSPolicy(sandbox.Inherit),
+			},
+		}
 		args := buildExecArgs(
 			"hello",
 			"gemini-2.5-flash",
@@ -148,7 +152,11 @@ func TestSettingsBehavior(t *testing.T) {
 
 		assert.Equal(t, "", sandboxFlagValue(nil), "Nil sandbox should map to empty flag")
 		assert.Equal(t, "read-only", sandboxFlagValue(&sandbox.Sandbox{}), "Read-only sandbox should map to read-only flag")
-		assert.Equal(t, "danger-full-access", sandboxFlagValue(&sandbox.Sandbox{ExtendedPolicy: &sandbox.ExtendedPolicy{}}), "Extended sandbox should map to full access flag")
+		assert.Equal(t, "danger-full-access", sandboxFlagValue(&sandbox.Sandbox{
+			AgentPolicy: &sandbox.Policy{
+				FSPolicy: sandbox.FSPolicy(sandbox.Inherit),
+			},
+		}), "Extended sandbox should map to full access flag")
 	})
 
 	t.Run("DefaultsAndUpdateDefaultsShouldPersist", func(t *testing.T) {
@@ -230,5 +238,46 @@ func TestHookBehavior(t *testing.T) {
 		assert.Equal(t, hooks.Webhook, back.Info.Type, "Webhook round-trip should retain webhook type")
 		require.NotNil(t, back.Info.Url, "Webhook round-trip URL should be set")
 		assert.Equal(t, u, *back.Info.Url, "Webhook round-trip URL should match source URL")
+	})
+}
+
+func TestSettingsResolverInterface(t *testing.T) {
+	t.Run("AgentShouldReadWriteUserAndWorkspaceSettings", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		agent := &geminiAgent{
+			workDir:   t.TempDir(),
+			permMode:  codeagent.PermissionDefault,
+			model:     "gemini-2.5-flash",
+			settings:  newSettingsResolver(),
+			sbx:       nil,
+			sessionID: "s1",
+		}
+
+		err := agent.SaveDefaultSettings(&codeagent.Settings{
+			Provider: Gemini,
+			Config: codeagent.Config{
+				Model:          codeagent.Model{Provider: Gemini, Model: "gemini-2.5-pro"},
+				PermissionMode: codeagent.PermissionAcceptEdits,
+				Sandbox: &sandbox.Sandbox{
+					AgentPolicy: &sandbox.Policy{FSPolicy: sandbox.FSPolicy(sandbox.Inherit)},
+				},
+			},
+		})
+		require.NoError(t, err, "Saving default settings should succeed")
+
+		userSettings, err := agent.GetUserSettings()
+		require.NoError(t, err, "Reading user settings should succeed")
+		assert.Equal(t, "gemini-2.5-pro", userSettings.Config.Model.Model, "User settings model should match persisted value")
+		assert.Equal(t, codeagent.PermissionAcceptEdits, userSettings.Config.PermissionMode, "User permission should map from persisted approval mode")
+		require.NotNil(t, userSettings.Config.Sandbox, "User sandbox should map from persisted sandbox flag")
+
+		ws := t.TempDir()
+		require.NoError(t, syncModelAndModeConfig(ws, "gemini-2.0-flash", codeagent.PermissionPlan), "Workspace settings sync should succeed")
+		workspaceSettings, err := agent.GetWorkspaceSettings(sandbox.WorkspaceDir(ws))
+		require.NoError(t, err, "Reading workspace settings should succeed")
+		assert.Equal(t, "gemini-2.0-flash", workspaceSettings.Config.Model.Model, "Workspace model should match workspace settings file")
+		assert.Equal(t, codeagent.PermissionPlan, workspaceSettings.Config.PermissionMode, "Workspace permission should match workspace approval mode")
 	})
 }

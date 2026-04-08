@@ -56,6 +56,7 @@ type geminiAgent struct {
 	sessionID       string
 	sbx             *sandbox.Sandbox
 	info            codeagent.CodeAgentInfo
+	settings        *settingsResolver
 	registeredHooks []*hooks.HookData
 }
 
@@ -86,6 +87,7 @@ func New(workDir, model string) (codeagent.CodeAgent, error) {
 		model:    model,
 		permMode: codeagent.PermissionAcceptEdits,
 		info:     codeagent.CodeAgentInfo{Provider: Gemini, Name: "gemini", Version: ver},
+		settings: newSettingsResolver(),
 	}, nil
 }
 

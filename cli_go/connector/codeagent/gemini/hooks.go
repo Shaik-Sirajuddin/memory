@@ -260,9 +260,17 @@ func hookDefinitionToData(uid string, id hooks.HookID, d geminiHookDefinition, p
 func sandboxFromFlag(flag string) *sandbox.Sandbox {
 	switch strings.TrimSpace(flag) {
 	case "danger-full-access", "full-access":
-		return &sandbox.Sandbox{ExtendedPolicy: &sandbox.ExtendedPolicy{}}
+		return &sandbox.Sandbox{
+			AgentPolicy: &sandbox.Policy{
+				FSPolicy: sandbox.FSPolicy(sandbox.Inherit),
+			},
+		}
 	case "read-only":
-		return &sandbox.Sandbox{}
+		return &sandbox.Sandbox{
+			AgentPolicy: &sandbox.Policy{
+				FSPolicy: sandbox.FSPolicy(sandbox.PermissiveRead),
+			},
+		}
 	default:
 		return nil
 	}

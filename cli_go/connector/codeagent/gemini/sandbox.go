@@ -14,7 +14,7 @@ func sandboxFlagValue(s *sandbox.Sandbox) string {
 	if s == nil {
 		return ""
 	}
-	if s.ExtendedPolicy != nil {
+	if s.AgentPolicy != nil && sandbox.AgentFSPolicy(s.AgentPolicy.FSPolicy) == sandbox.Inherit {
 		return "danger-full-access"
 	}
 	return "read-only"
