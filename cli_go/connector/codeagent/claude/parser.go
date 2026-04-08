@@ -5,23 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"os"
 	"os/exec"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 )
 
-// ============================================================
-// Logger constructor
-// ============================================================
+// TODO : attach parser methods to ClaudeParser
 
-func newLogger(connector string) *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     slog.LevelDebug,
-		AddSource: true,
-	})).With("connector", connector)
+// ClaudeParser implements [hooks.HookIOParser]
+type ClaudeParser struct {
 }
 
 // ============================================================
@@ -123,59 +116,59 @@ func parseAuthStatus(raw string) codeagent.UserIdentify {
 // HookIOParser — parse Claude hook wire format → interface types
 // ============================================================
 
-func (a *claudeAgent) PreToolUseParams(raw any) (*hooks.PreToolUseParams, error) {
+func (a *ClaudeParser) PreToolUseParams(raw any) (*hooks.PreToolUseParams, error) {
 	return parseHookInput[hooks.PreToolUseParams](raw)
 }
 
-func (a *claudeAgent) PostToolUseParams(raw any) (*hooks.PostToolUseParams, error) {
+func (a *ClaudeParser) PostToolUseParams(raw any) (*hooks.PostToolUseParams, error) {
 	return parseHookInput[hooks.PostToolUseParams](raw)
 }
 
-func (a *claudeAgent) PostToolUseFailureParams(raw any) (*hooks.PostToolUseFailureParams, error) {
+func (a *ClaudeParser) PostToolUseFailureParams(raw any) (*hooks.PostToolUseFailureParams, error) {
 	return parseHookInput[hooks.PostToolUseFailureParams](raw)
 }
 
-func (a *claudeAgent) PreSessionStartParams(raw any) (*hooks.PreSessionStartParams, error) {
+func (a *ClaudeParser) PreSessionStartParams(raw any) (*hooks.PreSessionStartParams, error) {
 	return parseHookInput[hooks.PreSessionStartParams](raw)
 }
 
-func (a *claudeAgent) PostSessionStartParams(raw any) (*hooks.PostSessionStartParams, error) {
+func (a *ClaudeParser) PostSessionStartParams(raw any) (*hooks.PostSessionStartParams, error) {
 	return parseHookInput[hooks.PostSessionStartParams](raw)
 }
 
-func (a *claudeAgent) PrePromptInputParams(raw any) (*hooks.PrePromptInputParams, error) {
+func (a *ClaudeParser) PrePromptInputParams(raw any) (*hooks.PrePromptInputParams, error) {
 	return parseHookInput[hooks.PrePromptInputParams](raw)
 }
 
-func (a *claudeAgent) PostPromptInputParams(raw any) (*hooks.PostPromptInputParams, error) {
+func (a *ClaudeParser) PostPromptInputParams(raw any) (*hooks.PostPromptInputParams, error) {
 	return parseHookInput[hooks.PostPromptInputParams](raw)
 }
 
-func (a *claudeAgent) PreToolUseResult(raw any) (*hooks.PreToolUseResult, error) {
+func (a *ClaudeParser) PreToolUseResult(raw any) (*hooks.PreToolUseResult, error) {
 	return parseHookInput[hooks.PreToolUseResult](raw)
 }
 
-func (a *claudeAgent) PostToolUseResult(raw any) (*hooks.PostToolUseResult, error) {
+func (a *ClaudeParser) PostToolUseResult(raw any) (*hooks.PostToolUseResult, error) {
 	return parseHookInput[hooks.PostToolUseResult](raw)
 }
 
-func (a *claudeAgent) PostToolUseFailureResult(raw any) (*hooks.PostToolUseFailureResult, error) {
+func (a *ClaudeParser) PostToolUseFailureResult(raw any) (*hooks.PostToolUseFailureResult, error) {
 	return parseHookInput[hooks.PostToolUseFailureResult](raw)
 }
 
-func (a *claudeAgent) PreSessionStartResult(raw any) (*hooks.PreSessionStartResult, error) {
+func (a *ClaudeParser) PreSessionStartResult(raw any) (*hooks.PreSessionStartResult, error) {
 	return parseHookInput[hooks.PreSessionStartResult](raw)
 }
 
-func (a *claudeAgent) PostSessionStartResult(raw any) (*hooks.PostSessionStartResult, error) {
+func (a *ClaudeParser) PostSessionStartResult(raw any) (*hooks.PostSessionStartResult, error) {
 	return parseHookInput[hooks.PostSessionStartResult](raw)
 }
 
-func (a *claudeAgent) PrePromptInputResult(raw any) (*hooks.PrePromptInputResult, error) {
+func (a *ClaudeParser) PrePromptInputResult(raw any) (*hooks.PrePromptInputResult, error) {
 	return parseHookInput[hooks.PrePromptInputResult](raw)
 }
 
-func (a *claudeAgent) PostPromptInputResult(raw any) (*hooks.PostPromptInputResult, error) {
+func (a *ClaudeParser) PostPromptInputResult(raw any) (*hooks.PostPromptInputResult, error) {
 	return parseHookInput[hooks.PostPromptInputResult](raw)
 }
 

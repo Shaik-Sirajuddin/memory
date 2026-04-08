@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"os"
 )
-
-func newLogger(connector string) *slog.Logger {
+// TODO : define connector specific key pairs 
+func NewLogger(connector string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     slog.LevelDebug,
 		AddSource: true,

@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
+	claudelog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/log"
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	"github.com/Shaik-Sirajuddin/memory/connector/sandbox"
 )
@@ -29,7 +31,7 @@ var Config ConfigPaths = ConfigPaths{
 }
 
 // logger is the package-level structured logger for the claude connector.
-var logger = newLogger("claude")
+var logger = claudelog.NewLogger("claude")
 
 // ============================================================
 // Available models
@@ -55,6 +57,8 @@ const DefaultModel = ModelSonnet4
 // ============================================================
 
 type claudeAgent struct {
+	*ClaudeParser
+	resolver        *settings.Resolver
 	mu              sync.RWMutex
 	workDir         string
 	model           string
@@ -90,10 +94,12 @@ func New(workDir, model string) (codeagent.CodeAgent, error) {
 	logger.Info("claude agent initialised", "workDir", workDir, "model", model, "version", ver)
 
 	return &claudeAgent{
-		workDir:  workDir,
-		model:    model,
-		permMode: codeagent.PermissionDefault,
-		info:     codeagent.CodeAgentInfo{Provider: Claude, Name: "claude", Version: ver},
+		ClaudeParser: &ClaudeParser{},
+		resolver:     settings.New(Claude),
+		workDir:      workDir,
+		model:        model,
+		permMode:     codeagent.PermissionDefault,
+		info:         codeagent.CodeAgentInfo{Provider: Claude, Name: "claude", Version: ver},
 	}, nil
 }
 
@@ -177,4 +183,24 @@ func (a *claudeAgent) UpdateDefaults(cfg *codeagent.Config) error {
 	a.mu.Unlock()
 	logger.Info("UpdateDefaults applied", "model", a.model, "permMode", a.permMode)
 	return nil
+}
+
+// ============================================================
+// SettingsResolver — delegated to settings.Resolver
+// ============================================================
+
+func (a *claudeAgent) GetUserSettings() (*codeagent.Settings, error) {
+	return a.resolver.GetUserSettings()
+}
+
+func (a *claudeAgent) GetWorkspaceSettings(dir sandbox.WorkspaceDir) (*codeagent.Settings, error) {
+	return a.resolver.GetWorkspaceSettings(dir)
+}
+
+func (a *claudeAgent) SaveDefaultSettings(s *codeagent.Settings) error {
+	return a.resolver.SaveDefaultSettings(s)
+}
+
+func (a *claudeAgent) WatchDefaultSettings(fn func(*codeagent.Settings)) error {
+	return a.resolver.WatchDefaultSettings(fn)
 }
