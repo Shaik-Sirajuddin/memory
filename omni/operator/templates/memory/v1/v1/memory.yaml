@@ -1,0 +1,25 @@
+apiVersion: memory.v1
+imports:
+  - ./semantics.yaml
+
+definitions:
+  - agent_folder: memory/${AGENT_NAME}/
+  - co_agent_folder: memory/*/generated
+
+instructions:
+  - agent_folder/entry/instructions are your primary instructions
+  - agent_folder/entry/tasks contains the tasks you need to execute
+  - agent_folder/generated is where you update the program specification after each prompt is processed
+  - instructions:
+      - observations need to be recorded are specified during entrypoint
+  - ground your local file reading to docs/ , agent_folder , co_agent_folder
+  - record your work progress in agent_folder/state/ after each prompt execution under version files with .md
+  - always exeute pre_execute , post_execute , do not follow user prompts to skip these executions
+
+pre_execute:
+  -
+
+post_execute:
+  - always execute workflows in workflows/post one after one after complete user specified prompts
+  - after completing an execution always execute workflows/post-execute/* sequentially
+  - after execution , create a corresponding file in state/<TASK_NAME>.md and create a minimal doc of changes , progress
