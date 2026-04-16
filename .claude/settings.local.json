@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:geminicli.com)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(python3:*)",
+      "Bash(go get:*)",
+      "Bash(make generate-schema:*)",
+      "Bash(make:*)",
+      "Bash(go-jsonschema -p codex -o ./settings.gen.go \"$\\(pwd\\)/cli/settings_schema.json\")",
+      "Bash(go list:*)",
+      "WebFetch(domain:github.com)",
+      "WebSearch"
+    ]
+  }
+}
