@@ -27,6 +27,11 @@ func (a *claudeAgent) UpdateSessionSandbox(p codeagent.UpdateSessionSandboxParam
 	a.mu.Lock()
 	a.sbx = p.Sandbox
 	workDir := a.workDir
+	if err := a.syncSandboxRuntimeLocked(); err != nil {
+		a.mu.Unlock()
+		logger.Error("UpdateSessionSandbox: runtime sync failed", "err", err)
+		return nil, fmt.Errorf("claude: update sandbox: sync runtime: %w", err)
+	}
 	a.mu.Unlock()
 
 	if err := writeClaudeSettings(claudeWorkspaceSettingsPath(workDir), &codeagent.Settings{

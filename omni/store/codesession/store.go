@@ -1,18 +1,14 @@
-package store
+package codesession
 
 import (
 	"database/sql"
 	"fmt"
 	"sync"
 
-	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
-	"github.com/Shaik-Sirajuddin/memory/omniagent/database"
+	"github.com/Shaik-Sirajuddin/memory/store/database"
+	"github.com/Shaik-Sirajuddin/memory/store/utils"
 )
-
-type sqlCodeSessionStore struct {
-	db *sql.DB
-}
 
 var (
 	sessionStoreOnce sync.Once
@@ -45,24 +41,24 @@ func (s *sqlCodeSessionStore) GetSession(agentID string) (*omniagent.CodeSession
 
 // CreateSession persists a new session for the given agent.
 func (s *sqlCodeSessionStore) CreateSession(agentID string, session *omniagent.CodeSession) error {
-	provider, name := modelFields(session.Model)
+	provider, name := utils.ModelFields(session.Model)
 	_, err := s.db.Exec(
 		`INSERT INTO code_sessions (id, agent_id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.Id, agentID, provider, name,
-		session.Idx, boolToInt(session.IsActive), session.Prompts, session.LastSyncPrompt,
+		session.Idx, utils.BoolToInt(session.IsActive), session.Prompts, session.LastSyncPrompt,
 	)
 	return err
 }
 
 // UpdateSession updates an existing session for the given agent.
 func (s *sqlCodeSessionStore) UpdateSession(agentID string, session *omniagent.CodeSession) error {
-	provider, name := modelFields(session.Model)
+	provider, name := utils.ModelFields(session.Model)
 	res, err := s.db.Exec(
 		`UPDATE code_sessions
 		 SET model_provider = ?, model_name = ?, idx = ?, is_active = ?, prompts = ?, last_sync_prompt = ?
 		 WHERE id = ? AND agent_id = ?`,
-		provider, name, session.Idx, boolToInt(session.IsActive), session.Prompts, session.LastSyncPrompt,
+		provider, name, session.Idx, utils.BoolToInt(session.IsActive), session.Prompts, session.LastSyncPrompt,
 		session.Id, agentID,
 	)
 	if err != nil {
@@ -124,7 +120,7 @@ func scanSession(row *sql.Row) (*omniagent.CodeSession, error) {
 	}
 	return &omniagent.CodeSession{
 		Id:             id,
-		Model:          buildModel(provider, modelName),
+		Model:          utils.BuildModel(provider, modelName),
 		Idx:            idx,
 		IsActive:       isActive == 1,
 		Prompts:        prompts,
@@ -143,31 +139,10 @@ func scanSessionRow(rows *sql.Rows) (*omniagent.CodeSession, error) {
 	}
 	return &omniagent.CodeSession{
 		Id:             id,
-		Model:          buildModel(provider, modelName),
+		Model:          utils.BuildModel(provider, modelName),
 		Idx:            idx,
 		IsActive:       isActive == 1,
 		Prompts:        prompts,
 		LastSyncPrompt: lastSync,
 	}, nil
-}
-
-func modelFields(m *codeagent.Model) (provider, name string) {
-	if m == nil {
-		return "", ""
-	}
-	return string(m.Provider), m.Model
-}
-
-func buildModel(provider, name string) *codeagent.Model {
-	if provider == "" && name == "" {
-		return nil
-	}
-	return &codeagent.Model{Provider: codeagent.Provider(provider), Model: name}
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

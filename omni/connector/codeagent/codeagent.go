@@ -77,6 +77,12 @@ type UserIdentify struct {
 	DisplayName   string
 }
 
+type ConfigPaths struct {
+	GlobalConfigDirs    []string
+	WorkspaceConfigDirs []string
+	Binary              []string
+}
+
 // CodeAgent implements Model
 // CodeAgent Provides access to sessions
 // All operations of CodeAgent are concurrent safe

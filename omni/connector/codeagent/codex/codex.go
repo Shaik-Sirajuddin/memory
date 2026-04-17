@@ -17,18 +17,14 @@ import (
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
-type ConfigPaths struct {
-	GlobalConfigDirs    []string
-	WorkspaceConfigDirs []string
-}
-
-var config ConfigPaths = ConfigPaths{
+var config codeagent.ConfigPaths = codeagent.ConfigPaths{
 	GlobalConfigDirs: []string{
 		".codex",
 	},
 	WorkspaceConfigDirs: []string{
 		".codex",
 	},
+	Binary: []string{},
 }
 
 // logger is the package-level structured logger for the codex connector.

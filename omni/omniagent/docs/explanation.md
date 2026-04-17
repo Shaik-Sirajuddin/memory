@@ -2,7 +2,7 @@
 
 ## What is OmniAgent?
 
-OmniAgent is an agent runtime that manages one or more **code-agent sessions** within a single working directory. It wraps external code agents (Claude, Codex, Gemini) behind a uniform interface and keeps a persistent record of sessions, settings, and memory.
+OmniAgent is an agent runtime that manages one or more **code-agent sessions** within a single working directory. It wraps external code agents behind a uniform interface and keeps a persistent record of sessions, settings, and memory.
 
 The key constraint: **an OmniAgent instance is bound to one working directory at a time**. Forking into a parallel instance is supported, but each fork owns its own state.
 
@@ -41,11 +41,11 @@ A single SQLite file holds three tables:
 | `code_sessions` | `CodeSession` per agent (model stored as flat columns) |
 | `agent_settings` | `Settings` per agent (sandbox as JSON, model as flat columns) |
 
-Complex nested values (`sandbox.Config`) are JSON-serialised in-place. Primitive and flat values (model provider/name) use direct SQLite columns for easier querying and to avoid unmarshalling overhead.
+Complex nested values such as sandbox configuration are JSON-serialised in-place. Primitive and flat values such as model provider/name use direct SQLite columns for easier querying and to avoid unmarshalling overhead.
 
 ---
 
-## Data flow: creating an agent
+## Data flow: persisting an agent
 
 ```
 caller
@@ -79,4 +79,4 @@ PreSessionStart → PrePrompt → [prompt] → PostPrompt
 PostSessionStart
 ```
 
-These are intended for middleware that needs to observe or modify agent behaviour — e.g. injecting context before a prompt, or recording tool usage after the fact.
+These are intended for middleware that needs to observe or modify agent behaviour, such as injecting context before a prompt or recording tool usage after the fact.

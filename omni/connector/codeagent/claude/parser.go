@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
@@ -203,6 +204,20 @@ func parseHookInput[T any](raw any) (*T, error) {
 // ============================================================
 
 func lookPath(name string) (string, error) {
+	for _, candidate := range Config.Binary {
+		if candidate == "" {
+			continue
+		}
+		if candidate[0] == '/' {
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate, nil
+			}
+			continue
+		}
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path, nil
+		}
+	}
 	return exec.LookPath(name)
 }
 

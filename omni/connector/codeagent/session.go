@@ -20,6 +20,7 @@ type CreateSessionParams struct {
 	WorkDir        string
 	PermissionMode PermissionMode
 	SystemPrompt   string
+	RunTime        *sandbox.SandboxRuntime
 }
 
 type CreateSessionResult struct {

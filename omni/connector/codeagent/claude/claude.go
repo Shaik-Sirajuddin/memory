@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -12,21 +13,22 @@ import (
 	claudelog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/log"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
+	rootsandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
-type ConfigPaths struct {
-	GlobalConfigDirs    []string
-	WorkspaceConfigDirs []string
-}
-
-var Config ConfigPaths = ConfigPaths{
+var Config codeagent.ConfigPaths = codeagent.ConfigPaths{
 	GlobalConfigDirs: []string{
 		".claude",
 		".config/claude",
 	},
 	WorkspaceConfigDirs: []string{
-		"./claude",
+		".claude",
+	},
+	Binary: []string{
+		"claude",
+		"/usr/local/bin/claude",
+		"/opt/homebrew/bin/claude",
 	},
 }
 
@@ -66,6 +68,8 @@ type claudeAgent struct {
 	systemPrompt    string
 	sessionID       string
 	sbx             *sandbox.Config
+	sbxProvisioner  sandbox.SandboxProvisioner
+	sbxRuntime      sandbox.SandboxRuntime
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
 }
@@ -216,4 +220,46 @@ func (a *claudeAgent) WatchDefaultSettings(fn func(*codeagent.Settings)) error {
 			fn(cfg)
 		}
 	})
+}
+
+func (a *claudeAgent) syncSandboxRuntimeLocked() error {
+	if a.sbx == nil {
+		a.sbxRuntime = nil
+		a.sbxProvisioner = nil
+		return nil
+	}
+
+	if a.sbxRuntime != nil {
+		return a.sbxRuntime.Sync(a.sbx)
+	}
+
+	supported := rootsandbox.SupportedProvisioners(runtime.GOOS)
+	if len(supported) == 0 {
+		return fmt.Errorf("claude: sandbox runtime: no supported provisioner for %s", runtime.GOOS)
+	}
+
+	provisioner, err := rootsandbox.NewProvisioner(supported[0], &sandbox.Sandbox{
+		Config: a.sbx,
+	}, rootsandbox.ProvisionerOptions{
+		WorkDir: a.workDir,
+	})
+	if err != nil {
+		return fmt.Errorf("claude: sandbox runtime: create provisioner: %w", err)
+	}
+
+	id := a.sessionID
+	if strings.TrimSpace(id) == "" {
+		id = "claude-sandbox-" + generateID()
+	}
+	rt, err := provisioner.Create(rootsandbox.CreateSandboxParams{
+		ID:     id,
+		Config: a.sbx,
+	})
+	if err != nil {
+		return fmt.Errorf("claude: sandbox runtime: create runtime: %w", err)
+	}
+
+	a.sbxProvisioner = provisioner
+	a.sbxRuntime = rt
+	return nil
 }

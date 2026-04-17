@@ -5,7 +5,7 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/cli"
 	"github.com/Shaik-Sirajuddin/memory/config"
-	"github.com/Shaik-Sirajuddin/memory/operator"
+	operator "github.com/Shaik-Sirajuddin/memory/operator/impl"
 )
 
 func main() {

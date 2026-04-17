@@ -16,17 +16,19 @@ import (
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
-type ConfigPaths struct {
-	GlobalConfigDirs    []string
-	WorkspaceConfigDirs []string
-}
-
-var Config ConfigPaths = ConfigPaths{
+var Config codeagent.ConfigPaths = codeagent.ConfigPaths{
 	GlobalConfigDirs: []string{
 		".gemini",
+		".config/gemini",
 	},
 	WorkspaceConfigDirs: []string{
 		".gemini",
+		".config/gemini",
+	},
+	Binary: []string{
+		"gemini",
+		"/usr/local/bin/gemini",
+		"/opt/homebrew/bin/gemini",
 	},
 }
 

@@ -12,7 +12,13 @@
       "Bash(go-jsonschema -p codex -o ./settings.gen.go \"$\\(pwd\\)/cli/settings_schema.json\")",
       "Bash(go list:*)",
       "WebFetch(domain:github.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(grep *)",
+      "Bash(gofmt -e /home/siraj/Desktop/ai/memory_tree/cli/omni/operator/impl/default.go)",
+      "Bash(git commit *)"
     ]
   }
 }

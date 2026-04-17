@@ -29,7 +29,7 @@ A persisted code-agent session belonging to an agent.
 ---
 
 ### `Settings`
-Runtime configuration for an agent (defined in `omniagent/config`).
+Runtime configuration for an agent.
 
 | Field | JSON Key | Description |
 |---|---|---|
@@ -53,12 +53,13 @@ A single hook command registered for a lifecycle event.
 | `Timeout` | `timeout` | Per-hook timeout override (seconds) |
 | `Url` | `url` | HTTP endpoint for webhook-style hooks |
 
-### `Config`
-Agent-level configuration embedding hook capabilities.
+### `ConfigPaths`
+Search roots used to resolve omni configuration files.
 
 | Field | Type | Description |
 |---|---|---|
-| `Capabilities` | `hooks.Capabilities` | Declares which lifecycle hooks the agent supports |
+| `GlobalConfigDirs` | `[]string` | Global omniagent config directories |
+| `WorkspaceConfigDirs` | `[]string` | Workspace-local omniagent config directories |
 
 ---
 
@@ -68,7 +69,7 @@ Full in-memory state of a running agent. Array fields (`Sessions`) are omitted w
 | Field | Type | Description |
 |---|---|---|
 | `Info` | `*AgentInfo` | Agent identity |
-| `ActiveWorkSpace` | `*sandbox.Workspace` | Currently active workspace |
+| `ActiveWorkSpace` | `*sandbox.Config` | Currently active workspace configuration |
 | `ActiveSession` | `*CodeSession` | Currently active session |
 | `Settings` | `*Settings` | Agent settings |
 | `Sessions` | `[]*CodeSession` | All sessions (runtime only, not fetched from store) |
@@ -82,9 +83,9 @@ Controls the lifecycle of a running agent instance.
 
 ```go
 type OmniAgent interface {
+    codeagent.CodeAgent
     Data() *Data
     New()
-    UpdateSettings(UpdateSettingsParams) error
     SyncMemory()
     NewCodeSession()
 }
@@ -94,7 +95,6 @@ type OmniAgent interface {
 |---|---|
 | `Data()` | Returns current in-memory state |
 | `New()` | Initialises a new agent instance |
-| `UpdateSettings(params)` | Applies settings after the current command completes |
 | `SyncMemory()` | Flushes session memory to the persistent store |
 | `NewCodeSession()` | Creates a new code session, optionally with a different model |
 

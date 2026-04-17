@@ -1,5 +1,7 @@
 package provider
 
+import "io"
+
 type WorkspaceDir string
 
 const (
@@ -67,6 +69,7 @@ type ProvisionerOptions struct {
 	ExtraArgs   []string
 	GlobalArgs  []string
 	RuntimeRoot string
+	Store       SandboxStore
 }
 
 type GetSandboxParams struct {
@@ -84,22 +87,45 @@ type CreateSandboxParams struct {
 	Config *Config
 }
 
-type SandboxProvisioner interface {
-	Create(params CreateSandboxParams) (*Sandbox, error)
-	Command(pid, command string, args []string) error
-	Execute(pid, command string, args []string) error
+type ExecutionResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+type SandboxProcess interface {
+	PID() int
+	Stdout() io.Reader
+	Stderr() io.Reader
+	Wait() (*ExecutionResult, error)
+	Kill() error
+}
+
+type SandboxRuntime interface {
+	Sandbox() *Sandbox
+	Command(command string, args []string) error
+	Execute(command string, args []string) error
+	Capture(command string, args []string) (*ExecutionResult, error)
+	Start(command string, args []string) (SandboxProcess, error)
 	Sync(config *Config) error
-	List(ListSandboxParams) ([]*Sandbox, error)
-	GetSandbox(params *GetSandboxParams) (*Sandbox, error)
+}
+
+type SandboxProvisioner interface {
+	Create(params CreateSandboxParams) (SandboxRuntime, error)
+	List(ListSandboxParams) ([]SandboxRuntime, error)
+	GetSandbox(params *GetSandboxParams) (SandboxRuntime, error)
 }
 
 type Info struct {
 	Application string
 }
 
-type Store interface {
+type SandboxStore interface {
 	Info() Info
 	Create(*Sandbox) error
 	Update(*Sandbox) error
+	Get(*GetSandboxParams) (*Sandbox, error)
 	List() ([]*Sandbox, error)
 }
+
+type Store = SandboxStore

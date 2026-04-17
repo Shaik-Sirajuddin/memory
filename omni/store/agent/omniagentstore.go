@@ -3,16 +3,19 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
-	"github.com/Shaik-Sirajuddin/memory/omniagent/database"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"github.com/Shaik-Sirajuddin/memory/store/codesession"
+	"github.com/Shaik-Sirajuddin/memory/store/database"
+	"github.com/Shaik-Sirajuddin/memory/store/utils"
 )
 
 type sqlOmniAgentStore struct {
 	db       *sql.DB
-	sessions CodeSessionStore
+	sessions codesession.CodeSessionStore
 }
 
 var (
@@ -22,14 +25,14 @@ var (
 )
 
 // GetOmniAgentStore returns the singleton OmniAgentStore.
-func GetOmniAgentStore() (OmniAgentStore, error) {
+func GetOmniAgentStore() (AgentStore, error) {
 	omniStoreOnce.Do(func() {
 		db, err := database.GetDB()
 		if err != nil {
 			omniStoreErr = err
 			return
 		}
-		sessions, err := GetCodeSessionStore()
+		sessions, err := codesession.GetCodeSessionStore()
 		if err != nil {
 			omniStoreErr = err
 			return
@@ -108,7 +111,7 @@ func (s *sqlOmniAgentStore) GetSettings(ID string) (*omniagent.Settings, error) 
 		return nil, err
 	}
 	settings := &omniagent.Settings{
-		DefaultModel: buildModel(provider, modelName),
+		DefaultModel: utils.BuildModel(provider, modelName),
 	}
 	if sandboxJSON != "" && sandboxJSON != "{}" {
 		var sb sandbox.Config
@@ -126,7 +129,7 @@ func (s *sqlOmniAgentStore) UpdateSettings(ID string, settings *omniagent.Settin
 	if err != nil {
 		return err
 	}
-	provider, modelName := modelFields(settings.DefaultModel)
+	provider, modelName := utils.ModelFields(settings.DefaultModel)
 	_, err = s.db.Exec(
 		`INSERT INTO agent_settings (agent_id, sandbox, default_model_provider, default_model_name)
 		 VALUES (?, ?, ?, ?)
@@ -140,15 +143,49 @@ func (s *sqlOmniAgentStore) UpdateSettings(ID string, settings *omniagent.Settin
 }
 
 // ListAgents queries agents filtered by workspace.
-func (s *sqlOmniAgentStore) ListAgents(params ListAgentParams) {
-	_, _ = s.db.Query(
+func (s *sqlOmniAgentStore) ListAgents(params ListAgentParams) ListAgentResponse {
+	rows, err := s.db.Query(
 		`SELECT id, name, workspace_dir, memory_dir FROM agents WHERE workspace_dir = ?`,
 		string(params.Workspace),
 	)
+	if err != nil {
+		return ListAgentResponse{}
+	}
+	defer rows.Close()
+
+	var agents []*omniagent.Data
+	for rows.Next() {
+		var id, name, wsDir, memDir string
+		if err := rows.Scan(&id, &name, &wsDir, &memDir); err != nil {
+			return ListAgentResponse{}
+		}
+		agents = append(agents, &omniagent.Data{
+			Info: &omniagent.AgentInfo{
+				ID:           id,
+				Name:         name,
+				WorkspaceDir: sandbox.WorkspaceDir(wsDir),
+				MemoryDir:    memDir,
+			},
+		})
+	}
+	return ListAgentResponse{Agents: agents}
 }
 
-// DeleteAgent is defined by the interface; agent ID is not provided at this level.
-func (s *sqlOmniAgentStore) DeleteAgent() {}
+// DeleteAgent removes an agent by ID.
+func (s *sqlOmniAgentStore) DeleteAgent(ID string) error {
+	res, err := s.db.Exec(`DELETE FROM agents WHERE id = ?`, ID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("agent %q not found", ID)
+	}
+	return nil
+}
 
 // --- helpers ---
 

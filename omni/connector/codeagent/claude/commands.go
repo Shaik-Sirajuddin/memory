@@ -8,6 +8,10 @@ import (
 	"strings"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
+	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"github.com/Shaik-Sirajuddin/memory/sandbox/provider/bubblewrap"
+	"github.com/Shaik-Sirajuddin/memory/sandbox/provider/gvisor"
+	"github.com/Shaik-Sirajuddin/memory/sandbox/provider/seatbelt"
 )
 
 const (
@@ -39,6 +43,9 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		id = generateID()
 	}
 	a.sessionID = id
+	if p.RunTime != nil {
+		a.sbxRuntime = *p.RunTime
+	}
 	workDir := a.workDir
 	a.mu.Unlock()
 
@@ -65,6 +72,7 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
 	a.mu.RLock()
 	workDir := a.workDir
+	rt := a.sbxRuntime
 	a.mu.RUnlock()
 
 	args := []string{"-r", p.ID}
@@ -72,8 +80,10 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		args = append(args, "--fork-session")
 	}
 
-	cmd := exec.Command("claude", args...)
-	cmd.Dir = workDir
+	cmd, err := a.commandFor(workDir, rt, "claude", args...)
+	if err != nil {
+		return nil, fmt.Errorf("claude: resume: sandbox command: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude: resume: start process: %w", err)
 	}
@@ -125,13 +135,16 @@ func (a *claudeAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult,
 	permMode := a.permMode
 	systemPrompt := a.systemPrompt
 	sessionID := a.sessionID
+	rt := a.sbxRuntime
 	a.mu.RUnlock()
 
 	args := buildExecArgs(p.Prompt, model, permMode, systemPrompt, sessionID, p.OutputFormat, p.MaxTurns)
 	logger.Debug("Exec", "workDir", workDir, "args", args)
 
-	cmd := exec.Command("claude", args...)
-	cmd.Dir = workDir
+	cmd, err := a.commandFor(workDir, rt, "claude", args...)
+	if err != nil {
+		return nil, fmt.Errorf("claude exec: sandbox command: %w", err)
+	}
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -160,13 +173,16 @@ func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult,
 	permMode := a.permMode
 	systemPrompt := a.systemPrompt
 	sessionID := a.sessionID
+	rt := a.sbxRuntime
 	a.mu.RUnlock()
 
 	args := buildStreamArgs(p.Prompt, model, permMode, systemPrompt, sessionID, p.MaxTurns)
 	logger.Debug("Stream", "workDir", workDir, "args", args)
 
-	cmd := exec.Command("claude", args...)
-	cmd.Dir = workDir
+	cmd, err := a.commandFor(workDir, rt, "claude", args...)
+	if err != nil {
+		return nil, fmt.Errorf("claude stream: sandbox command: %w", err)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -270,6 +286,42 @@ func captureOutput(dir, name string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+func (a *claudeAgent) commandFor(workDir string, rt sandbox.SandboxRuntime, name string, args ...string) (*exec.Cmd, error) {
+	a.mu.RLock()
+	provisioner := a.sbxProvisioner
+	runtime := a.sbxRuntime
+	a.mu.RUnlock()
+
+	if runtime == nil || provisioner == nil {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = workDir
+		return cmd, nil
+	}
+
+	sbx := runtime.Sandbox()
+	var executable string
+	var wrappedArgs []string
+	var err error
+
+	switch p := provisioner.(type) {
+	case *bubblewrap.Provisioner:
+		executable, wrappedArgs, err = p.BuildCommand(sbx, name, args)
+	case *seatbelt.Provisioner:
+		executable, wrappedArgs, err = p.BuildCommand(sbx, name, args)
+	case *gvisor.Provisioner:
+		executable, wrappedArgs, err = p.ExecCommand(sbx, name, args)
+	default:
+		return nil, fmt.Errorf("unsupported sandbox provisioner %T", provisioner)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command(executable, wrappedArgs...)
+	cmd.Dir = workDir
+	return cmd, nil
 }
 
 func trimSpace(s string) string {

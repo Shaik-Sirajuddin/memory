@@ -1,0 +1,108 @@
+datastore:
+  engine: sqlite
+  db: database/db.go
+  singleton: true
+  description: Shared omniagent persistence for agent metadata, agent settings, and code sessions.
+
+  tables:
+    - name: agents
+      description: Persistent agent identity and filesystem bindings.
+      columns:
+        - name: id
+          type: TEXT
+          constraints: PRIMARY KEY
+          maps_to: AgentInfo.ID
+        - name: name
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: AgentInfo.Name
+        - name: workspace_dir
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: AgentInfo.WorkspaceDir
+        - name: memory_dir
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: AgentInfo.MemoryDir
+
+    - name: code_sessions
+      description: Session rows for each agent; model is flattened for storage.
+      columns:
+        - name: id
+          type: TEXT
+          constraints: PRIMARY KEY
+          maps_to: CodeSession.Id
+        - name: agent_id
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: agent binding
+        - name: model_provider
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: CodeSession.Model.Provider
+        - name: model_name
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: CodeSession.Model.Model
+        - name: idx
+          type: INTEGER
+          constraints: NOT NULL
+          maps_to: CodeSession.Idx
+        - name: is_active
+          type: INTEGER
+          constraints: NOT NULL
+          maps_to: CodeSession.IsActive
+        - name: prompts
+          type: INTEGER
+          constraints: NOT NULL
+          maps_to: CodeSession.Prompts
+        - name: last_sync_prompt
+          type: INTEGER
+          constraints: NOT NULL
+          maps_to: CodeSession.LastSyncPrompt
+
+    - name: agent_settings
+      description: Persisted omniagent settings; sandbox is serialized and default model is flattened.
+      columns:
+        - name: agent_id
+          type: TEXT
+          constraints: PRIMARY KEY
+          maps_to: Data.Info.ID
+        - name: sandbox
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: Settings.Sandbox
+        - name: default_model_provider
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: Settings.DefaultModel.Provider
+        - name: default_model_name
+          type: TEXT
+          constraints: NOT NULL
+          maps_to: Settings.DefaultModel.Model
+
+store:
+  interfaces:
+    - name: OmniAgentStore
+      package: store/omniagent.go
+      description: Agent-level store for identity, settings, and active-session indirection.
+      methods:
+        - Save(*Data) error
+        - Create(*Data) error
+        - GetAgent(ID) (*Data, error)
+        - GetActiveSession(ID) (*CodeSession, error)
+        - UpdateActiveSession(ID, *CodeSession) error
+        - CreateSession(ID, *CodeSession) error
+        - GetSettings(ID) (*Settings, error)
+        - UpdateSettings(ID, *Settings) error
+        - ListAgents(ListAgentParams)
+        - DeleteAgent()
+
+    - name: CodeSessionStore
+      package: store/session.go
+      description: Session-focused store used directly and by OmniAgentStore.
+      methods:
+        - GetSession(agentID) (*CodeSession, error)
+        - CreateSession(agentID, *CodeSession) error
+        - UpdateSession(agentID, *CodeSession) error
+        - ListSessions(agentID, filter *CodeSession) ([]*CodeSession, error)
