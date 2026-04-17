@@ -1,4 +1,4 @@
-package operator
+package impl
 
 import (
 	"fmt"
@@ -15,7 +15,10 @@ import (
 	codexsettings "github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/gemini"
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
-	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	operator "github.com/Shaik-Sirajuddin/memory/operator"
+	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
+	"github.com/Shaik-Sirajuddin/memory/operator/impl/defaults"
+	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
 	"github.com/google/uuid"
 )
 
@@ -32,19 +35,20 @@ const (
 // nil disables them (e.g. when config.Features.Memory is false).
 type DefaultOperator struct {
 	config       config.OmniConfig
-	store        OperatorStore
-	agentMemory  AgentMemory
+	store        operatorstore.OperatorStore
+	agentMemory  operator.AgentMemory
+	provisioner  sandbox.SandboxProvisioner // nil = sandboxing disabled
 	newCodeAgent func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error)
 }
 
 // SwitchProvider implements [Operator].
 // SwitchProvider when switching between models , if a non fill session exists matching provider , agent , session is reused , override by CleanStart
-func (o *DefaultOperator) SwitchProvider(SwitchProviderParams) error {
+func (o *DefaultOperator) SwitchProvider(operator.SwitchProviderParams) error {
 	panic("unimplemented")
 }
 
 // ResumeAgent implements [Operator].
-func (o *DefaultOperator) ResumeAgent(params ResumeAgentParams) error {
+func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 	workspace, err := o.resolveWorkspace(params.Workspace)
 	if err != nil {
 		logger.Error("ResumeAgent: workspace resolution failed", "workspace", params.Workspace, "err", err)
@@ -78,7 +82,7 @@ func (o *DefaultOperator) ResumeAgent(params ResumeAgentParams) error {
 	if factory == nil {
 		return fmt.Errorf("operator: code agent factory is not configured")
 	}
-	runtime, err := factory(codeagent.Provider(DefaultProvider), string(agent.WorkspaceDir), DefaultModel)
+	runtime, err := factory(codeagent.Provider(operator.DefaultProvider), string(agent.WorkspaceDir), operator.DefaultModel)
 	if err != nil {
 		logger.Error("ResumeAgent: init code agent runtime failed", "agentID", agent.ID, "err", err)
 		return fmt.Errorf("operator: init code agent runtime: %w", err)
@@ -93,19 +97,32 @@ func (o *DefaultOperator) ResumeAgent(params ResumeAgentParams) error {
 
 // New returns an Operator with the default embedded AgentMemory module enabled.
 // The memory feature is gated at runtime by OmniConfig.Features.Memory.
-func New() (Operator, error) {
+func New() (operator.Operator, error) {
 	logger.Debug("New: initialising operator")
-	s, err := GetOperatorStore()
+	s, err := operatorstore.GetOperatorStore()
 	if err != nil {
 		logger.Error("New: store initialisation failed", "err", err)
 		return nil, fmt.Errorf("operator: init store: %w", err)
 	}
+	// Initialise a sandbox provisioner when a supported kind is available on the host.
+	var provisioner sandbox.SandboxProvisioner
+	if kinds := sandbox.HostSupportedProvisioners(); len(kinds) > 0 {
+		p, perr := sandbox.NewProvisioner(kinds[0], nil, sandbox.ProvisionerOptions{})
+		if perr != nil {
+			logger.Warn("New: sandbox provisioner init failed", "kind", kinds[0], "err", perr)
+		} else {
+			provisioner = p
+			logger.Info("New: sandbox provisioner ready", "kind", kinds[0])
+		}
+	}
+
 	op := &DefaultOperator{
 		config: config.OmniConfig{
 			Features: &config.Features{Memory: true},
 		},
 		store:       s,
-		agentMemory: &defaultAgentMemory{},
+		agentMemory: operator.NewDefaultAgentMemory(),
+		provisioner: provisioner,
 		newCodeAgent: func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
 			switch provider {
 			case providerClaude:
@@ -119,7 +136,7 @@ func New() (Operator, error) {
 			}
 		},
 	}
-	logger.Info("New: operator initialised", "memoryEnabled", op.memoryEnabled())
+	logger.Info("New: operator initialised", "memoryEnabled", op.memoryEnabled(), "sandboxEnabled", provisioner != nil)
 	return op, nil
 }
 
@@ -132,7 +149,7 @@ func (o *DefaultOperator) memoryEnabled() bool {
 }
 
 // DisoverCodeAgents checks which code-agent CLI binaries are present in PATH.
-func (o *DefaultOperator) DisoverCodeAgents() (*DisocveryResult, error) {
+func (o *DefaultOperator) DisoverCodeAgents() (*operator.DisocveryResult, error) {
 	logger.Debug("DisoverCodeAgents: scanning PATH for provider binaries")
 	candidates := []struct {
 		provider codeagent.Provider
@@ -151,11 +168,11 @@ func (o *DefaultOperator) DisoverCodeAgents() (*DisocveryResult, error) {
 		}
 	}
 	logger.Info("DisoverCodeAgents: completed", "providers", providers)
-	return &DisocveryResult{Providers: providers}, nil
+	return &operator.DisocveryResult{Providers: providers}, nil
 }
 
 // ListCodeAgents returns agents registered under the given workspace directory.
-func (o *DefaultOperator) ListCodeAgents(params GetCodeAgentsParams) (*GetAgentsResult, error) {
+func (o *DefaultOperator) ListCodeAgents(params operator.GetCodeAgentsParams) (*operator.GetAgentsResult, error) {
 	if err := params.Validate(); err != nil {
 		logger.Error("ListCodeAgents: validation failed", "err", err)
 		return nil, err
@@ -173,15 +190,15 @@ func (o *DefaultOperator) ListCodeAgents(params GetCodeAgentsParams) (*GetAgents
 	}
 	if len(agents) == 0 {
 		logger.Info("ListCodeAgents: no agents found", "workspace", workspace)
-		return &GetAgentsResult{}, nil
+		return &operator.GetAgentsResult{}, nil
 	}
 	logger.Info("ListCodeAgents: agent resolved", "workspace", workspace, "agentID", agents[0].ID)
-	return &GetAgentsResult{AgentInfo: agents[0]}, nil
+	return &operator.GetAgentsResult{AgentInfo: agents[0]}, nil
 }
 
 // CreateAgent creates a new agent entry, auto-creating the workspace when needed.
 // When memory is enabled, the agent's memory directory is seeded with the initial template.
-func (o *DefaultOperator) CreateAgent(params CreateAgentParams) error {
+func (o *DefaultOperator) CreateAgent(params operator.CreateAgentParams) error {
 	if err := params.Validate(); err != nil {
 		logger.Error("CreateAgent: validation failed", "err", err)
 		return err
@@ -204,7 +221,7 @@ func (o *DefaultOperator) CreateAgent(params CreateAgentParams) error {
 	ws, err := o.store.WorkspaceByDir(workspace)
 	if err != nil {
 		logger.Debug("CreateAgent: workspace missing, creating new workspace", "workspace", workspace)
-		ws = &TeamInfo{
+		ws = &operator.TeamInfo{
 			ID:           uuid.NewString(),
 			Name:         filepath.Base(string(workspace)),
 			WorkspaceDir: string(workspace),
@@ -221,7 +238,7 @@ func (o *DefaultOperator) CreateAgent(params CreateAgentParams) error {
 	if agentName == "" {
 		agentName = fmt.Sprintf("agent-%s", agentID[:8])
 	}
-	memDir := agentMemDir(string(workspace), agentName)
+	memDir := operator.AgentMemDir(string(workspace), agentName)
 
 	agent := &omniagent.AgentInfo{
 		ID:           agentID,
@@ -253,7 +270,7 @@ func (o *DefaultOperator) CreateAgent(params CreateAgentParams) error {
 
 // TeamInit initialises the workspace memory root.
 // Returns ErrMemoryDisabled when the memory feature is off.
-func (o *DefaultOperator) TeamInit(params TeamInitParams) error {
+func (o *DefaultOperator) TeamInit(params operator.TeamInitParams) error {
 	if err := params.Validate(); err != nil {
 		logger.Error("TeamInit: validation failed", "err", err)
 		return err
@@ -266,7 +283,7 @@ func (o *DefaultOperator) TeamInit(params TeamInitParams) error {
 	logger.Info("TeamInit: start", "workspace", workspace, "repoURL", params.RepoURL, "memoryEnabled", o.memoryEnabled())
 	if !o.memoryEnabled() {
 		logger.Error("TeamInit: memory feature disabled", "workspace", workspace)
-		return ErrMemoryDisabled
+		return operator.ErrMemoryDisabled
 	}
 	if err := o.agentMemory.Init(string(workspace), params.RepoURL); err != nil {
 		logger.Error("TeamInit: initialisation failed", "workspace", workspace, "err", err)
@@ -282,7 +299,7 @@ func (o *DefaultOperator) TeamInit(params TeamInitParams) error {
 
 // UpgradeAgent applies a newer template version to an existing agent's memory directory.
 // Returns ErrMemoryDisabled when the memory feature is off.
-func (o *DefaultOperator) UpgradeAgent(params UpgradeAgentParams) error {
+func (o *DefaultOperator) UpgradeAgent(params operator.UpgradeAgentParams) error {
 	if err := params.Validate(); err != nil {
 		logger.Error("UpgradeAgent: validation failed", "err", err)
 		return err
@@ -290,7 +307,7 @@ func (o *DefaultOperator) UpgradeAgent(params UpgradeAgentParams) error {
 	logger.Info("UpgradeAgent: start", "agentID", params.ID, "version", params.Version, "memoryEnabled", o.memoryEnabled())
 	if !o.memoryEnabled() {
 		logger.Error("UpgradeAgent: memory feature disabled", "agentID", params.ID)
-		return ErrMemoryDisabled
+		return operator.ErrMemoryDisabled
 	}
 	agent, err := o.store.GetAgent(params.ID)
 	if err != nil {
@@ -299,7 +316,7 @@ func (o *DefaultOperator) UpgradeAgent(params UpgradeAgentParams) error {
 	}
 	version := params.Version
 	if version == "" {
-		version = latestVersion
+		version = operator.LatestVersion
 	}
 	if err := o.agentMemory.Upgrade(agent.MemoryDir, version); err != nil {
 		logger.Error("UpgradeAgent: template upgrade failed", "agentID", params.ID, "version", version, "memoryDir", agent.MemoryDir, "err", err)
@@ -310,41 +327,41 @@ func (o *DefaultOperator) UpgradeAgent(params UpgradeAgentParams) error {
 }
 
 // ListWorkspaces returns all workspaces with their agent counts.
-func (o *DefaultOperator) ListWorkspaces(_ ListWorkspacesParams) (ListWorkspacesResult, error) {
+func (o *DefaultOperator) ListWorkspaces(_ operator.ListWorkspacesParams) (operator.ListWorkspacesResult, error) {
 	logger.Debug("ListWorkspaces: loading workspaces")
 	teams, err := o.store.ListWorkspaces()
 	if err != nil {
 		logger.Error("ListWorkspaces: store query failed", "err", err)
-		return ListWorkspacesResult{}, err
+		return operator.ListWorkspacesResult{}, err
 	}
 	logger.Info("ListWorkspaces: completed", "count", len(teams))
-	return ListWorkspacesResult{Teams: teams}, nil
+	return operator.ListWorkspacesResult{Teams: teams}, nil
 }
 
 // GetWorkspace returns a workspace and all agents registered under it.
-func (o *DefaultOperator) GetWorkspace(params GetWorkSpaceParams) (GetTeamResult, error) {
+func (o *DefaultOperator) GetWorkspace(params operator.GetWorkSpaceParams) (operator.GetTeamResult, error) {
 	if err := params.Validate(); err != nil {
 		logger.Error("GetWorkspace: validation failed", "err", err)
-		return GetTeamResult{}, err
+		return operator.GetTeamResult{}, err
 	}
 	logger.Debug("GetWorkspace: loading workspace", "workspaceID", params.ID)
 	ws, err := o.store.GetWorkspace(params.ID)
 	if err != nil {
 		logger.Error("GetWorkspace: workspace lookup failed", "workspaceID", params.ID, "err", err)
-		return GetTeamResult{}, fmt.Errorf("operator: get workspace %q: %w", params.ID, err)
+		return operator.GetTeamResult{}, fmt.Errorf("operator: get workspace %q: %w", params.ID, err)
 	}
 	agents, err := o.store.ListAgentsByDir(o.workspaceDirOf(ws))
 	if err != nil {
 		logger.Error("GetWorkspace: agent listing failed", "workspaceID", params.ID, "workspace", ws.WorkspaceDir, "err", err)
-		return GetTeamResult{}, fmt.Errorf("operator: list agents for workspace %q: %w", params.ID, err)
+		return operator.GetTeamResult{}, fmt.Errorf("operator: list agents for workspace %q: %w", params.ID, err)
 	}
 	logger.Info("GetWorkspace: completed", "workspaceID", params.ID, "agentCount", len(agents))
-	return GetTeamResult{Info: ws, Agents: agents}, nil
+	return operator.GetTeamResult{Info: ws, Agents: agents}, nil
 }
 
 // DeleteAgent removes an agent entry from the index.
 // When memory is enabled, the agent's memory directory is also deleted from disk.
-func (o *DefaultOperator) DeleteAgent(params DeleteAgentParams) error {
+func (o *DefaultOperator) DeleteAgent(params operator.DeleteAgentParams) error {
 	if err := params.Validate(); err != nil {
 		logger.Error("DeleteAgent: validation failed", "err", err)
 		return err
@@ -371,7 +388,7 @@ func (o *DefaultOperator) DeleteAgent(params DeleteAgentParams) error {
 }
 
 // workspaceDirOf converts a TeamInfo directory string to a WorkspaceDir.
-func (o *DefaultOperator) workspaceDirOf(ws *TeamInfo) sandbox.WorkspaceDir {
+func (o *DefaultOperator) workspaceDirOf(ws *operator.TeamInfo) sandbox.WorkspaceDir {
 	return sandbox.WorkspaceDir(ws.WorkspaceDir)
 }
 
@@ -406,7 +423,7 @@ func findWorkspaceFromMemory(start string) (string, bool) {
 }
 
 func memoryRootExists(workspace string) bool {
-	info, err := os.Stat(filepath.Join(workspace, memoryDirName))
+	info, err := os.Stat(filepath.Join(workspace, operator.MemoryDirName))
 	return err == nil && info.IsDir()
 }
 
@@ -416,10 +433,10 @@ func sanitizeAgentName(name string) string {
 
 func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider codeagent.Provider, model string, interactive bool) error {
 	if provider == "" {
-		provider = codeagent.Provider(DefaultProvider)
+		provider = codeagent.Provider(operator.DefaultProvider)
 	}
 	if model == "" {
-		model = DefaultModel
+		model = operator.DefaultModel
 	}
 
 	factory := o.newCodeAgent
@@ -432,11 +449,29 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 		return fmt.Errorf("operator: init code agent runtime: %w", err)
 	}
 
+	// Provision a sandbox runtime for this session when the provisioner is available.
+	// The default sandbox config grants the agent access to the provider binary directories.
+	var sbxRuntime *sandbox.SandboxRuntime
+	if o.provisioner != nil {
+		cfg := defaults.SandboxConfig(provider)
+		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
+			ID:     agent.ID,
+			Config: cfg,
+		})
+		if sbxErr != nil {
+			logger.Warn("startAgentSession: sandbox provision failed", "agentID", agent.ID, "err", sbxErr)
+		} else {
+			sbxRuntime = &rt
+			logger.Debug("startAgentSession: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider)
+		}
+	}
+
 	createResult, err := runtime.Create(codeagent.CreateSessionParams{
 		ID:      agent.ID,
 		Name:    agent.Name,
 		Model:   model,
 		WorkDir: string(agent.WorkspaceDir),
+		RunTime: sbxRuntime,
 	})
 	if err != nil {
 		return fmt.Errorf("operator: create session for agent %q: %w", agent.ID, err)
@@ -452,7 +487,7 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 		return nil
 	}
 
-	//operator holds codeagents , it sends a callback to codeagent on sandbox change
+	// operator holds codeagents , it sends a callback to codeagent on sandbox change
 	// codeagent becomes passive component , where it returns only data
 	if _, err := runtime.Resume(codeagent.ResumeSessionParams{ID: sessionID}); err != nil {
 		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
@@ -464,7 +499,7 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 func (o *DefaultOperator) ensureWorkspaceAndGuideAgent(workspace sandbox.WorkspaceDir) error {
 	ws, err := o.store.WorkspaceByDir(workspace)
 	if err != nil {
-		ws = &TeamInfo{
+		ws = &operator.TeamInfo{
 			ID:           uuid.NewString(),
 			Name:         filepath.Base(string(workspace)),
 			WorkspaceDir: string(workspace),
@@ -488,7 +523,7 @@ func (o *DefaultOperator) ensureWorkspaceAndGuideAgent(workspace sandbox.Workspa
 		ID:           uuid.NewString(),
 		Name:         "guide",
 		WorkspaceDir: workspace,
-		MemoryDir:    agentMemDir(string(workspace), "guide"),
+		MemoryDir:    operator.AgentMemDir(string(workspace), "guide"),
 	}
 	if err := o.store.CreateAgent(guide); err != nil {
 		return err
@@ -514,7 +549,7 @@ func (o *DefaultOperator) GetCodeAgentResolver(agent codeagent.Provider) (*codea
 		r = codexsettings.New(providerCodex)
 	case providerGemini:
 		logger.Error("GetCodeAgentResolver: resolver unavailable", "provider", providerGemini)
-		return nil, fmt.Errorf("operator: %w: %s", ErrResolverUnavailable, providerGemini)
+		return nil, fmt.Errorf("operator: %w: %s", operator.ErrResolverUnavailable, providerGemini)
 	default:
 		logger.Error("GetCodeAgentResolver: unknown provider", "provider", agent)
 		return nil, fmt.Errorf("operator: unknown provider %q", agent)
@@ -523,8 +558,3 @@ func (o *DefaultOperator) GetCodeAgentResolver(agent codeagent.Provider) (*codea
 	return &r, nil
 }
 
-// ErrResolverUnavailable is returned when a provider has no exported settings resolver.
-var ErrResolverUnavailable = fmt.Errorf("settings resolver unavailable for provider")
-
-// ErrMemoryDisabled is returned when a memory operation is attempted but the feature is off.
-var ErrMemoryDisabled = fmt.Errorf("operator: memory feature disabled")

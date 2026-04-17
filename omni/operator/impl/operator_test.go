@@ -1,4 +1,4 @@
-package operator
+package impl
 
 import (
 	"database/sql"
@@ -11,6 +11,8 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
+	operator "github.com/Shaik-Sirajuddin/memory/operator"
+	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,6 +35,13 @@ CREATE TABLE IF NOT EXISTS agent_settings (
     FOREIGN KEY (agent_id) REFERENCES agents(id)
 );`
 
+const testWorkspaceSchema = `
+CREATE TABLE IF NOT EXISTS workspaces (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    workspace_dir TEXT NOT NULL UNIQUE
+);`
+
 func TestStoreSchemaIncludesRequiredTables(t *testing.T) {
 	db := newTestDB(t)
 
@@ -46,10 +55,10 @@ func TestCreateAgent(t *testing.T) {
 		op := newTestOperator(t, true)
 		workspace := sandbox.WorkspaceDir(t.TempDir())
 
-		err := op.CreateAgent(CreateAgentParams{Workspace: workspace, Name: "operator-a", Interactive: true})
+		err := op.CreateAgent(operator.CreateAgentParams{Workspace: workspace, Name: "operator-a", Interactive: true})
 		require.NoError(t, err, "CreateAgent should succeed when memory is enabled")
 
-		result, err := op.ListCodeAgents(GetCodeAgentsParams{Workspace: workspace})
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: workspace})
 		require.NoError(t, err, "ListCodeAgents should resolve the created agent")
 		require.NotNil(t, result.AgentInfo, "Created agent should be stored")
 
@@ -65,12 +74,12 @@ func TestCreateAgent(t *testing.T) {
 		assert.FileExists(t, filepath.Join(string(workspace), "memory", "memory.yaml"), "Workspace memory.yaml should be created instead")
 		assert.FileExists(t, filepath.Join(string(workspace), "agent_"+result.AgentInfo.Name+".md"), "Workspace should include the agent entry markdown")
 
-		workspaces, err := op.ListWorkspaces(ListWorkspacesParams{})
+		workspaces, err := op.ListWorkspaces(operator.ListWorkspacesParams{})
 		require.NoError(t, err, "ListWorkspaces should succeed after agent creation")
 		require.Len(t, workspaces.Teams, 1, "Exactly one workspace should be created")
 		assert.Equal(t, 1, workspaces.Teams[0].Agents, "Workspace agent count should reflect the inserted agent")
 
-		workspaceData, err := op.GetWorkspace(GetWorkSpaceParams{ID: workspaces.Teams[0].ID})
+		workspaceData, err := op.GetWorkspace(operator.GetWorkSpaceParams{ID: workspaces.Teams[0].ID})
 		require.NoError(t, err, "GetWorkspace should return the created workspace")
 		require.NotNil(t, workspaceData.Info, "Workspace info should be populated")
 		assert.Len(t, workspaceData.Agents, 1, "Workspace lookup should include the created agent")
@@ -80,10 +89,10 @@ func TestCreateAgent(t *testing.T) {
 		op := newTestOperator(t, false)
 		workspace := sandbox.WorkspaceDir(t.TempDir())
 
-		err := op.CreateAgent(CreateAgentParams{Workspace: workspace, Name: "operator-b"})
+		err := op.CreateAgent(operator.CreateAgentParams{Workspace: workspace, Name: "operator-b"})
 		require.NoError(t, err, "CreateAgent should still persist the agent when memory is disabled")
 
-		result, err := op.ListCodeAgents(GetCodeAgentsParams{Workspace: workspace})
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: workspace})
 		require.NoError(t, err, "ListCodeAgents should resolve the stored agent")
 		require.NotNil(t, result.AgentInfo, "Created agent should be stored")
 
@@ -102,10 +111,10 @@ func TestCreateAgent(t *testing.T) {
 			require.NoError(t, os.Chdir(prev), "Working directory should be restored")
 		})
 
-		err = op.CreateAgent(CreateAgentParams{Name: "operator-c"})
+		err = op.CreateAgent(operator.CreateAgentParams{Name: "operator-c"})
 		require.NoError(t, err, "CreateAgent should auto-init memory in the current workspace")
 
-		result, err := op.ListCodeAgents(GetCodeAgentsParams{})
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{})
 		require.NoError(t, err, "ListCodeAgents should default to resolved workspace")
 		require.NotNil(t, result.AgentInfo, "Stored agent should be returned")
 		assert.Equal(t, sandbox.WorkspaceDir(cwd), result.AgentInfo.WorkspaceDir, "Workspace should default to the current directory when no memory root exists")
@@ -116,7 +125,7 @@ func TestCreateAgent(t *testing.T) {
 	t.Run("ResolvesWorkspaceFromNearestAncestorMemory", func(t *testing.T) {
 		op := newTestOperator(t, true)
 		workspace := t.TempDir()
-		require.NoError(t, op.TeamInit(TeamInitParams{Workspace: sandbox.WorkspaceDir(workspace)}), "TeamInit should prepare the ancestor workspace")
+		require.NoError(t, op.TeamInit(operator.TeamInitParams{Workspace: sandbox.WorkspaceDir(workspace)}), "TeamInit should prepare the ancestor workspace")
 
 		nested := filepath.Join(workspace, "nested", "child")
 		require.NoError(t, os.MkdirAll(nested, 0o755), "Nested working directory creation should succeed")
@@ -128,10 +137,10 @@ func TestCreateAgent(t *testing.T) {
 			require.NoError(t, os.Chdir(prev), "Working directory should be restored")
 		})
 
-		err = op.CreateAgent(CreateAgentParams{Name: "operator-d"})
+		err = op.CreateAgent(operator.CreateAgentParams{Name: "operator-d"})
 		require.NoError(t, err, "CreateAgent should resolve to the nearest ancestor with a memory root")
 
-		result, err := op.ListCodeAgents(GetCodeAgentsParams{})
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{})
 		require.NoError(t, err, "ListCodeAgents should default to the resolved ancestor workspace")
 		require.NotNil(t, result.AgentInfo, "Stored agent should be returned")
 		assert.Equal(t, sandbox.WorkspaceDir(workspace), result.AgentInfo.WorkspaceDir, "Workspace should resolve to the ancestor containing memory")
@@ -142,10 +151,10 @@ func TestCreateAgent(t *testing.T) {
 		op := newTestOperator(t, true)
 		workspace := sandbox.WorkspaceDir(t.TempDir())
 
-		err := op.CreateAgent(CreateAgentParams{Workspace: workspace, AllowGeneratedName: true})
+		err := op.CreateAgent(operator.CreateAgentParams{Workspace: workspace, AllowGeneratedName: true})
 		require.NoError(t, err, "CreateAgent should allow generated names when the flag is enabled")
 
-		result, err := op.ListCodeAgents(GetCodeAgentsParams{Workspace: workspace})
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: workspace})
 		require.NoError(t, err, "ListCodeAgents should return the generated-name agent")
 		require.NotNil(t, result.AgentInfo, "Generated-name agent should be stored")
 		assert.Contains(t, result.AgentInfo.Name, "agent-", "Generated names should use the agent- prefix")
@@ -155,14 +164,14 @@ func TestCreateAgent(t *testing.T) {
 		op := newTestOperator(t, true)
 		runtime := &stubCodeAgent{}
 		op.newCodeAgent = func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
-			assert.Equal(t, codeagent.Provider(DefaultProvider), provider, "CreateAgent should use the default provider")
-			assert.Equal(t, DefaultModel, model, "CreateAgent should use the default model")
+			assert.Equal(t, codeagent.Provider(operator.DefaultProvider), provider, "CreateAgent should use the default provider")
+			assert.Equal(t, operator.DefaultModel, model, "CreateAgent should use the default model")
 			assert.NotEmpty(t, workDir, "CreateAgent should pass a workspace to the connector")
 			return runtime, nil
 		}
 
 		workspace := sandbox.WorkspaceDir(t.TempDir())
-		err := op.CreateAgent(CreateAgentParams{Workspace: workspace, Name: "operator-interactive", Interactive: true})
+		err := op.CreateAgent(operator.CreateAgentParams{Workspace: workspace, Name: "operator-interactive", Interactive: true})
 		require.NoError(t, err, "Interactive CreateAgent should bootstrap and resume the initial session")
 
 		require.Len(t, runtime.createCalls, 1, "CreateAgent should create exactly one connector session")
@@ -179,7 +188,7 @@ func TestCreateAgent(t *testing.T) {
 			return runtime, nil
 		}
 
-		err := op.CreateAgent(CreateAgentParams{
+		err := op.CreateAgent(operator.CreateAgentParams{
 			Workspace:   sandbox.WorkspaceDir(t.TempDir()),
 			Name:        "operator-batch",
 			Interactive: false,
@@ -196,7 +205,7 @@ func TestCreateAgent(t *testing.T) {
 			return nil, errors.New("connector unavailable")
 		}
 
-		err := op.CreateAgent(CreateAgentParams{
+		err := op.CreateAgent(operator.CreateAgentParams{
 			Workspace:   sandbox.WorkspaceDir(t.TempDir()),
 			Name:        "operator-fail",
 			Interactive: true,
@@ -214,7 +223,7 @@ func TestTeamInit(t *testing.T) {
 		op := newTestOperator(t, true)
 		workspace := t.TempDir()
 
-		err := op.TeamInit(TeamInitParams{Workspace: sandbox.WorkspaceDir(workspace)})
+		err := op.TeamInit(operator.TeamInitParams{Workspace: sandbox.WorkspaceDir(workspace)})
 		require.NoError(t, err, "TeamInit should succeed when memory is enabled")
 
 		assert.FileExists(t, filepath.Join(workspace, "memory", "memory.yaml"), "Workspace memory.yaml should be created")
@@ -227,7 +236,7 @@ func TestTeamInit(t *testing.T) {
 		assert.ErrorIs(t, guideMemoryErr, os.ErrNotExist, "Guide agent should not receive per-agent memory data files")
 		assert.FileExists(t, filepath.Join(workspace, "agent_guide.md"), "Guide agent workspace markdown should be created")
 
-		result, err := op.ListCodeAgents(GetCodeAgentsParams{Workspace: sandbox.WorkspaceDir(workspace)})
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: sandbox.WorkspaceDir(workspace)})
 		require.NoError(t, err, "ListCodeAgents should resolve agents for the initialised workspace")
 		require.NotNil(t, result.AgentInfo, "Guide agent should be stored")
 		assert.Equal(t, "guide", result.AgentInfo.Name, "TeamInit should create the guide agent by default")
@@ -235,8 +244,8 @@ func TestTeamInit(t *testing.T) {
 
 	t.Run("MemoryDisabledReturnsError", func(t *testing.T) {
 		op := newTestOperator(t, false)
-		err := op.TeamInit(TeamInitParams{Workspace: sandbox.WorkspaceDir(t.TempDir())})
-		require.ErrorIs(t, err, ErrMemoryDisabled, "TeamInit should reject calls when memory is disabled")
+		err := op.TeamInit(operator.TeamInitParams{Workspace: sandbox.WorkspaceDir(t.TempDir())})
+		require.ErrorIs(t, err, operator.ErrMemoryDisabled, "TeamInit should reject calls when memory is disabled")
 	})
 
 	t.Run("DefaultsWorkspaceToCwd", func(t *testing.T) {
@@ -254,7 +263,7 @@ func TestTeamInit(t *testing.T) {
 			require.NoError(t, os.Chdir(prev), "Working directory should be restored")
 		})
 
-		err = op.TeamInit(TeamInitParams{})
+		err = op.TeamInit(operator.TeamInitParams{})
 		require.NoError(t, err, "TeamInit should default workspace to cwd")
 		assert.FileExists(t, filepath.Join(workspace, "memory", "memory.yaml"), "Memory root should be created in cwd")
 	})
@@ -262,28 +271,28 @@ func TestTeamInit(t *testing.T) {
 
 func TestValidation(t *testing.T) {
 	t.Run("ParamValidation", func(t *testing.T) {
-		assert.NoError(t, (GetCodeAgentsParams{}).Validate(), "GetCodeAgentsParams should allow empty workspace")
-		assert.EqualError(t, (CreateAgentParams{}).Validate(), "operator: agent name is required unless generated names are enabled", "CreateAgentParams should require a name unless generated names are enabled")
-		assert.NoError(t, (CreateAgentParams{AllowGeneratedName: true}).Validate(), "Generated-name flag should bypass explicit-name validation")
-		assert.EqualError(t, (DeleteAgentParams{}).Validate(), "operator: agent id is required", "DeleteAgentParams should require agent id")
-		assert.EqualError(t, (GetWorkSpaceParams{}).Validate(), "operator: workspace id is required", "GetWorkSpaceParams should require workspace id")
-		assert.NoError(t, (TeamInitParams{}).Validate(), "TeamInitParams should allow empty workspace")
-		assert.EqualError(t, (UpgradeAgentParams{}).Validate(), "operator: agent id is required", "UpgradeAgentParams should require agent id")
+		assert.NoError(t, (operator.GetCodeAgentsParams{}).Validate(), "GetCodeAgentsParams should allow empty workspace")
+		assert.EqualError(t, (operator.CreateAgentParams{}).Validate(), "operator: agent name is required unless generated names are enabled", "CreateAgentParams should require a name unless generated names are enabled")
+		assert.NoError(t, (operator.CreateAgentParams{AllowGeneratedName: true}).Validate(), "Generated-name flag should bypass explicit-name validation")
+		assert.EqualError(t, (operator.DeleteAgentParams{}).Validate(), "operator: agent id is required", "DeleteAgentParams should require agent id")
+		assert.EqualError(t, (operator.GetWorkSpaceParams{}).Validate(), "operator: workspace id is required", "GetWorkSpaceParams should require workspace id")
+		assert.NoError(t, (operator.TeamInitParams{}).Validate(), "TeamInitParams should allow empty workspace")
+		assert.EqualError(t, (operator.UpgradeAgentParams{}).Validate(), "operator: agent id is required", "UpgradeAgentParams should require agent id")
 	})
 
 	t.Run("OperatorMethodsRejectInvalidParams", func(t *testing.T) {
 		op := newTestOperator(t, true)
 
-		err := op.CreateAgent(CreateAgentParams{})
+		err := op.CreateAgent(operator.CreateAgentParams{})
 		require.EqualError(t, err, "operator: agent name is required unless generated names are enabled", "CreateAgent should reject missing names by default")
 
-		_, err = op.GetWorkspace(GetWorkSpaceParams{})
+		_, err = op.GetWorkspace(operator.GetWorkSpaceParams{})
 		require.EqualError(t, err, "operator: workspace id is required", "GetWorkspace should reject empty workspace id")
 
-		err = op.DeleteAgent(DeleteAgentParams{})
+		err = op.DeleteAgent(operator.DeleteAgentParams{})
 		require.EqualError(t, err, "operator: agent id is required", "DeleteAgent should reject empty id")
 
-		err = op.UpgradeAgent(UpgradeAgentParams{})
+		err = op.UpgradeAgent(operator.UpgradeAgentParams{})
 		require.EqualError(t, err, "operator: agent id is required", "UpgradeAgent should reject empty id")
 	})
 }
@@ -297,10 +306,10 @@ func TestResumeAgent(t *testing.T) {
 		}
 
 		workspace := sandbox.WorkspaceDir(t.TempDir())
-		err := op.CreateAgent(CreateAgentParams{Workspace: workspace, Name: "operator-resume"})
+		err := op.CreateAgent(operator.CreateAgentParams{Workspace: workspace, Name: "operator-resume"})
 		require.NoError(t, err, "CreateAgent should succeed before resume")
 
-		err = op.ResumeAgent(ResumeAgentParams{Workspace: workspace, Name: "operator-resume"})
+		err = op.ResumeAgent(operator.ResumeAgentParams{Workspace: workspace, Name: "operator-resume"})
 		require.NoError(t, err, "ResumeAgent should succeed for an indexed agent")
 		require.Len(t, resumed.resumeCalls, 1, "Resume should be invoked exactly once")
 		assert.NotEmpty(t, resumed.resumeCalls[0].ID, "Resume should be called with a session identifier")
@@ -308,7 +317,7 @@ func TestResumeAgent(t *testing.T) {
 
 	t.Run("RejectsMissingName", func(t *testing.T) {
 		op := newTestOperator(t, true)
-		err := op.ResumeAgent(ResumeAgentParams{})
+		err := op.ResumeAgent(operator.ResumeAgentParams{})
 		require.EqualError(t, err, "operator: agent name is required", "ResumeAgent should require an agent name")
 	})
 }
@@ -316,7 +325,7 @@ func TestResumeAgent(t *testing.T) {
 func newTestOperator(t *testing.T, memoryEnabled bool) *DefaultOperator {
 	t.Helper()
 
-	store := &sqlStore{db: newTestDB(t)}
+	store := operatorstore.NewWithDB(newTestDB(t))
 	op := &DefaultOperator{
 		config: config.OmniConfig{
 			Features: &config.Features{Memory: memoryEnabled},
@@ -327,7 +336,7 @@ func newTestOperator(t *testing.T, memoryEnabled bool) *DefaultOperator {
 		},
 	}
 	if memoryEnabled {
-		op.agentMemory = &defaultAgentMemory{}
+		op.agentMemory = operator.NewDefaultAgentMemory()
 	}
 	return op
 }
@@ -345,7 +354,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	_, err = db.Exec(testAgentSchema)
 	require.NoError(t, err, "Creating agent tables should succeed")
 
-	_, err = db.Exec(workspaceSchema)
+	_, err = db.Exec(testWorkspaceSchema)
 	require.NoError(t, err, "Creating workspaces table should succeed")
 
 	return db

@@ -131,6 +131,12 @@ func (p UpgradeAgentParams) Validate() error {
 	return nil
 }
 
+// ErrMemoryDisabled is returned when a memory operation is attempted but the feature is off.
+var ErrMemoryDisabled = fmt.Errorf("operator: memory feature disabled")
+
+// ErrResolverUnavailable is returned when a provider has no exported settings resolver.
+var ErrResolverUnavailable = fmt.Errorf("operator: settings resolver unavailable for provider")
+
 // Operator manages the state of default agents
 // provisioning of new agent happens through operator
 type Operator interface {

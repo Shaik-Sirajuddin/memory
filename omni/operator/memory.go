@@ -14,8 +14,8 @@ import (
 var templateFS embed.FS
 
 const (
-	latestVersion = "v1"
-	memoryDirName = "memory"
+	LatestVersion = "v1"
+	MemoryDirName = "memory"
 	metadataFile  = "metadata.yaml"
 )
 
@@ -56,11 +56,11 @@ type AgentMemory interface {
 type defaultAgentMemory struct{}
 
 func (m *defaultAgentMemory) Init(workspaceRoot, repoURL string) error {
-	memDir := filepath.Join(workspaceRoot, memoryDirName)
+	memDir := filepath.Join(workspaceRoot, MemoryDirName)
 	logger.Info("memory.Init: start", "workspaceRoot", workspaceRoot, "repoURL", repoURL, "memoryDir", memDir)
 
 	if repoURL != "" {
-		if err := gitSubmoduleAdd(workspaceRoot, repoURL, memoryDirName); err != nil {
+		if err := gitSubmoduleAdd(workspaceRoot, repoURL, MemoryDirName); err != nil {
 			logger.Error("memory.Init: git submodule add failed", "workspaceRoot", workspaceRoot, "repoURL", repoURL, "err", err)
 			return fmt.Errorf("git submodule add: %w", err)
 		}
@@ -77,23 +77,23 @@ func (m *defaultAgentMemory) Init(workspaceRoot, repoURL string) error {
 		}
 	}
 
-	if err := seedMemoryRoot(memDir, latestVersion); err != nil {
-		logger.Error("memory.Init: seed root failed", "memoryDir", memDir, "version", latestVersion, "err", err)
+	if err := seedMemoryRoot(memDir, LatestVersion); err != nil {
+		logger.Error("memory.Init: seed root failed", "memoryDir", memDir, "version", LatestVersion, "err", err)
 		return err
 	}
-	logger.Info("memory.Init: completed", "memoryDir", memDir, "version", latestVersion)
+	logger.Info("memory.Init: completed", "memoryDir", memDir, "version", LatestVersion)
 	return nil
 }
 
 func (m *defaultAgentMemory) Create(memDir string) error {
-	logger.Info("memory.Create: start", "memoryDir", memDir, "version", latestVersion)
+	logger.Info("memory.Create: start", "memoryDir", memDir, "version", LatestVersion)
 	workspaceRoot := workspaceRootFromAgentDir(memDir)
 	agentName := filepath.Base(memDir)
-	if err := applyTemplate(workspaceRoot, memDir, agentName, latestVersion); err != nil {
-		logger.Error("memory.Create: apply template failed", "memoryDir", memDir, "version", latestVersion, "err", err)
+	if err := applyTemplate(workspaceRoot, memDir, agentName, LatestVersion); err != nil {
+		logger.Error("memory.Create: apply template failed", "memoryDir", memDir, "version", LatestVersion, "err", err)
 		return err
 	}
-	logger.Info("memory.Create: completed", "memoryDir", memDir, "version", latestVersion)
+	logger.Info("memory.Create: completed", "memoryDir", memDir, "version", LatestVersion)
 	return nil
 }
 
@@ -311,8 +311,14 @@ func readVersionCode(memDir string) (int, error) {
 	return 0, fmt.Errorf("version_code not found in %s", metadataFile)
 }
 
-func agentMemDir(workspaceRoot, agentID string) string {
-	return filepath.Join(workspaceRoot, memoryDirName, agentID)
+// AgentMemDir returns the memory directory path for an agent inside its workspace.
+func AgentMemDir(workspaceRoot, agentID string) string {
+	return filepath.Join(workspaceRoot, MemoryDirName, agentID)
+}
+
+// NewDefaultAgentMemory returns the default embedded-template AgentMemory implementation.
+func NewDefaultAgentMemory() AgentMemory {
+	return &defaultAgentMemory{}
 }
 
 func workspaceRootFromAgentDir(memDir string) string {
@@ -324,7 +330,7 @@ func agentTemplateRoot(version string) string {
 }
 
 func memoryTemplateRoot(version string) string {
-	return filepath.Join("templates", "memory", latestVersion, version)
+	return filepath.Join("templates", "memory", LatestVersion, version)
 }
 
 // --- git helpers ---
