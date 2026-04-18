@@ -32,6 +32,7 @@ type CreateSessionResult struct {
 type ResumeSessionParams struct {
 	ID          string
 	ForkSession bool
+	RunTime     *sandbox.SandboxRuntime
 }
 
 type ResumeSessionResult struct {

@@ -7,10 +7,10 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
-
+	
 const (
-	DefaultProvider        = "gemini"
-	DefaultModel           = "gemini3.0-flash"
+	DefaultProvider        = "claude"
+	DefaultModel           = "claude-sonnet-4-6"
 	DefaultProviderVersion = "1.0"
 )
 
@@ -19,7 +19,7 @@ type GetCodeAgentsParams struct {
 }
 
 type GetAgentsResult struct {
-	AgentInfo *omniagent.AgentInfo `json:"agent_info"`
+	Agents []*omniagent.AgentInfo `json:"agents"`
 }
 
 type CreateAgentParams struct {
@@ -86,13 +86,20 @@ type ForkAgentParams struct {
 }
 
 type SwitchProviderParams struct {
-	ID         string `json:"id"`
-	CleanStart bool
-	Provider   codeagent.Provider
+	ID         string             `json:"id"`
+	CleanStart bool               `json:"clean_start,omitempty"`
+	Provider   codeagent.Provider `json:"provider,omitempty"`
+}
+
+// ProviderModels pairs a provider with its available model IDs.
+type ProviderModels struct {
+	Provider codeagent.Provider `json:"provider"`
+	Models   []string           `json:"models"`
 }
 
 type DisocveryResult struct {
 	Providers []codeagent.Provider `json:"providers"`
+	Models    []ProviderModels     `json:"models"`
 }
 
 func (p GetCodeAgentsParams) Validate() error {

@@ -16,8 +16,10 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/gemini"
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
 	operator "github.com/Shaik-Sirajuddin/memory/operator"
-	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
 	"github.com/Shaik-Sirajuddin/memory/operator/impl/defaults"
+	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
+	agentstore "github.com/Shaik-Sirajuddin/memory/store/agent"
+	"github.com/Shaik-Sirajuddin/memory/store/codesession"
 	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
 	"github.com/google/uuid"
 )
@@ -36,6 +38,8 @@ const (
 type DefaultOperator struct {
 	config       config.OmniConfig
 	store        operatorstore.OperatorStore
+	agentStore   agentstore.AgentStore
+	sessionStore codesession.CodeSessionStore
 	agentMemory  operator.AgentMemory
 	provisioner  sandbox.SandboxProvisioner // nil = sandboxing disabled
 	newCodeAgent func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error)
@@ -82,16 +86,56 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 	if factory == nil {
 		return fmt.Errorf("operator: code agent factory is not configured")
 	}
-	runtime, err := factory(codeagent.Provider(operator.DefaultProvider), string(agent.WorkspaceDir), operator.DefaultModel)
+
+	// Resolve provider/model from persisted session; fall back to defaults.
+	provider := codeagent.Provider(operator.DefaultProvider)
+	model := operator.DefaultModel
+	sessionID := agent.ID
+	if o.sessionStore != nil {
+		if session, sErr := o.sessionStore.GetSession(agent.ID); sErr == nil && session != nil {
+			if session.Model != nil {
+				if session.Model.Provider != "" {
+					provider = session.Model.Provider
+				}
+				if session.Model.Model != "" {
+					model = session.Model.Model
+				}
+			}
+			if session.Id != "" {
+				sessionID = session.Id
+			}
+		} else {
+			logger.Debug("ResumeAgent: no persisted session, using defaults", "agentID", agent.ID)
+		}
+	}
+
+	ca, err := factory(provider, string(agent.WorkspaceDir), model)
 	if err != nil {
 		logger.Error("ResumeAgent: init code agent runtime failed", "agentID", agent.ID, "err", err)
 		return fmt.Errorf("operator: init code agent runtime: %w", err)
 	}
-	if _, err := runtime.Resume(codeagent.ResumeSessionParams{ID: agent.ID}); err != nil {
+
+	// Provision a sandbox runtime for this resume session.
+	var sbxRuntime *sandbox.SandboxRuntime
+	if o.provisioner != nil {
+		cfg := defaults.SandboxConfig(provider)
+		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
+			ID:     agent.ID,
+			Config: cfg,
+		})
+		if sbxErr != nil {
+			logger.Warn("ResumeAgent: sandbox provision failed", "agentID", agent.ID, "err", sbxErr)
+		} else {
+			sbxRuntime = &rt
+			logger.Debug("ResumeAgent: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider)
+		}
+	}
+
+	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, RunTime: sbxRuntime}); err != nil {
 		logger.Error("ResumeAgent: resume failed", "agentID", agent.ID, "err", err)
 		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
 	}
-	logger.Info("ResumeAgent: completed", "agentID", agent.ID, "workspace", workspace, "name", name)
+	logger.Info("ResumeAgent: completed", "agentID", agent.ID, "workspace", workspace, "name", name, "provider", provider, "sessionID", sessionID)
 	return nil
 }
 
@@ -103,6 +147,16 @@ func New() (operator.Operator, error) {
 	if err != nil {
 		logger.Error("New: store initialisation failed", "err", err)
 		return nil, fmt.Errorf("operator: init store: %w", err)
+	}
+	as, err := agentstore.GetOmniAgentStore()
+	if err != nil {
+		logger.Error("New: agent store initialisation failed", "err", err)
+		return nil, fmt.Errorf("operator: init agent store: %w", err)
+	}
+	ss, err := codesession.GetCodeSessionStore()
+	if err != nil {
+		logger.Error("New: session store initialisation failed", "err", err)
+		return nil, fmt.Errorf("operator: init session store: %w", err)
 	}
 	// Initialise a sandbox provisioner when a supported kind is available on the host.
 	var provisioner sandbox.SandboxProvisioner
@@ -120,9 +174,11 @@ func New() (operator.Operator, error) {
 		config: config.OmniConfig{
 			Features: &config.Features{Memory: true},
 		},
-		store:       s,
-		agentMemory: operator.NewDefaultAgentMemory(),
-		provisioner: provisioner,
+		store:        s,
+		agentStore:   as,
+		sessionStore: ss,
+		agentMemory:  operator.NewDefaultAgentMemory(),
+		provisioner:  provisioner,
 		newCodeAgent: func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
 			switch provider {
 			case providerClaude:
@@ -149,26 +205,53 @@ func (o *DefaultOperator) memoryEnabled() bool {
 }
 
 // DisoverCodeAgents checks which code-agent CLI binaries are present in PATH.
+// For each available provider it calls codeagent.Discover() to enumerate models.
 func (o *DefaultOperator) DisoverCodeAgents() (*operator.DisocveryResult, error) {
 	logger.Debug("DisoverCodeAgents: scanning PATH for provider binaries")
 	candidates := []struct {
 		provider codeagent.Provider
 		binary   string
 	}{
-		{providerGemini, "gemini"},
 		{providerClaude, "claude"},
 		{providerCodex, "codex"},
+		// {providerGemini, "gemini"}, // temporarily disabled
 	}
 
+	cwd, _ := os.Getwd()
+
 	var providers []codeagent.Provider
+	var providerModels []operator.ProviderModels
+
 	for _, c := range candidates {
-		if _, err := exec.LookPath(c.binary); err == nil {
-			providers = append(providers, c.provider)
-			logger.Debug("DisoverCodeAgents: provider available", "provider", c.provider, "binary", c.binary)
+		if _, err := exec.LookPath(c.binary); err != nil {
+			continue
+		}
+		providers = append(providers, c.provider)
+		logger.Debug("DisoverCodeAgents: provider available", "provider", c.provider, "binary", c.binary)
+
+		// Attempt model discovery via the codeagent interface.
+		if o.newCodeAgent != nil {
+			ca, caErr := o.newCodeAgent(c.provider, cwd, "")
+			if caErr == nil {
+				if result, discErr := ca.Discover(); discErr == nil {
+					models := make([]string, len(result.Models))
+					for i, m := range result.Models {
+						models[i] = string(m)
+					}
+					providerModels = append(providerModels, operator.ProviderModels{
+						Provider: c.provider,
+						Models:   models,
+					})
+					logger.Debug("DisoverCodeAgents: models discovered", "provider", c.provider, "count", len(models))
+					continue
+				}
+			}
+			logger.Debug("DisoverCodeAgents: model discovery unavailable, skipping", "provider", c.provider)
 		}
 	}
-	logger.Info("DisoverCodeAgents: completed", "providers", providers)
-	return &operator.DisocveryResult{Providers: providers}, nil
+
+	logger.Info("DisoverCodeAgents: completed", "providers", providers, "modelEntries", len(providerModels))
+	return &operator.DisocveryResult{Providers: providers, Models: providerModels}, nil
 }
 
 // ListCodeAgents returns agents registered under the given workspace directory.
@@ -192,8 +275,8 @@ func (o *DefaultOperator) ListCodeAgents(params operator.GetCodeAgentsParams) (*
 		logger.Info("ListCodeAgents: no agents found", "workspace", workspace)
 		return &operator.GetAgentsResult{}, nil
 	}
-	logger.Info("ListCodeAgents: agent resolved", "workspace", workspace, "agentID", agents[0].ID)
-	return &operator.GetAgentsResult{AgentInfo: agents[0]}, nil
+	logger.Info("ListCodeAgents: agents resolved", "workspace", workspace, "count", len(agents))
+	return &operator.GetAgentsResult{Agents: agents}, nil
 }
 
 // CreateAgent creates a new agent entry, auto-creating the workspace when needed.
@@ -238,6 +321,20 @@ func (o *DefaultOperator) CreateAgent(params operator.CreateAgentParams) error {
 	if agentName == "" {
 		agentName = fmt.Sprintf("agent-%s", agentID[:8])
 	}
+
+	// Reject duplicate names within the same workspace.
+	existing, err := o.store.ListAgentsByDir(workspace)
+	if err != nil {
+		logger.Error("CreateAgent: name collision check failed", "workspace", workspace, "err", err)
+		return fmt.Errorf("operator: create agent: check existing agents: %w", err)
+	}
+	for _, a := range existing {
+		if a.Name == agentName {
+			logger.Error("CreateAgent: duplicate name", "workspace", workspace, "name", agentName)
+			return fmt.Errorf("operator: agent %q already exists in workspace", agentName)
+		}
+	}
+
 	memDir := operator.AgentMemDir(string(workspace), agentName)
 
 	agent := &omniagent.AgentInfo{
@@ -250,6 +347,11 @@ func (o *DefaultOperator) CreateAgent(params operator.CreateAgentParams) error {
 		logger.Error("CreateAgent: store insert failed", "workspaceID", ws.ID, "agentID", agentID, "err", err)
 		return fmt.Errorf("operator: create agent (workspace %s): %w", ws.ID, err)
 	}
+	if o.agentStore != nil {
+		if err := o.agentStore.UpdateSettings(agentID, &omniagent.Settings{}); err != nil {
+			logger.Warn("CreateAgent: settings init failed", "agentID", agentID, "err", err)
+		}
+	}
 	logger.Info("CreateAgent: agent stored", "workspaceID", ws.ID, "agentID", agentID, "memoryDir", memDir)
 
 	if o.memoryEnabled() {
@@ -261,8 +363,7 @@ func (o *DefaultOperator) CreateAgent(params operator.CreateAgentParams) error {
 	}
 
 	if err := o.startAgentSession(agent, params.Provider, params.Model, params.Interactive); err != nil {
-		logger.Error("CreateAgent: session bootstrap failed", "agentID", agentID, "provider", params.Provider, "model", params.Model, "err", err)
-		return err
+		logger.Warn("CreateAgent: session bootstrap failed — agent persisted; use 'omni agent resume' to start session", "agentID", agentID, "provider", params.Provider, "model", params.Model, "err", err)
 	}
 	logger.Info("CreateAgent: completed", "workspaceID", ws.ID, "agentID", agentID)
 	return nil
@@ -383,6 +484,11 @@ func (o *DefaultOperator) DeleteAgent(params operator.DeleteAgentParams) error {
 		logger.Error("DeleteAgent: store delete failed", "agentID", params.ID, "err", err)
 		return err
 	}
+	if o.agentStore != nil {
+		if err := o.agentStore.DeleteAgent(params.ID); err != nil {
+			logger.Warn("DeleteAgent: agent store sync failed", "agentID", params.ID, "err", err)
+		}
+	}
 	logger.Info("DeleteAgent: completed", "agentID", params.ID)
 	return nil
 }
@@ -444,9 +550,9 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 		return fmt.Errorf("operator: code agent factory is not configured")
 	}
 
-	runtime, err := factory(provider, string(agent.WorkspaceDir), model)
+	ca, err := factory(provider, string(agent.WorkspaceDir), model)
 	if err != nil {
-		return fmt.Errorf("operator: init code agent runtime: %w", err)
+		return fmt.Errorf("operator: init code agent: %w", err)
 	}
 
 	// Provision a sandbox runtime for this session when the provisioner is available.
@@ -466,7 +572,7 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 		}
 	}
 
-	createResult, err := runtime.Create(codeagent.CreateSessionParams{
+	createResult, err := ca.Create(codeagent.CreateSessionParams{
 		ID:      agent.ID,
 		Name:    agent.Name,
 		Model:   model,
@@ -481,15 +587,24 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 	if sessionID == "" {
 		sessionID = agent.ID
 	}
+
+	// Persist the session to the code session store.
+	if o.sessionStore != nil {
+		if err := o.sessionStore.CreateSession(agent.ID, &omniagent.CodeSession{
+			Id:       sessionID,
+			Model:    &codeagent.Model{Provider: provider, Model: model},
+			IsActive: true,
+		}); err != nil {
+			logger.Warn("startAgentSession: session store sync failed", "agentID", agent.ID, "sessionID", sessionID, "err", err)
+		}
+	}
 	logger.Info("startAgentSession: session created", "agentID", agent.ID, "provider", provider, "sessionID", sessionID, "interactive", interactive)
 
 	if !interactive {
 		return nil
 	}
 
-	// operator holds codeagents , it sends a callback to codeagent on sandbox change
-	// codeagent becomes passive component , where it returns only data
-	if _, err := runtime.Resume(codeagent.ResumeSessionParams{ID: sessionID}); err != nil {
+	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID}); err != nil {
 		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
 	}
 	logger.Info("startAgentSession: interactive session resumed", "agentID", agent.ID, "provider", provider, "sessionID", sessionID)
@@ -528,6 +643,11 @@ func (o *DefaultOperator) ensureWorkspaceAndGuideAgent(workspace sandbox.Workspa
 	if err := o.store.CreateAgent(guide); err != nil {
 		return err
 	}
+	if o.agentStore != nil {
+		if err := o.agentStore.Create(&omniagent.Data{Info: guide}); err != nil {
+			logger.Warn("ensureWorkspaceAndGuideAgent: agent store sync failed", "agentID", guide.ID, "err", err)
+		}
+	}
 	if o.memoryEnabled() {
 		if err := o.agentMemory.Create(guide.MemoryDir); err != nil {
 			return err
@@ -557,4 +677,3 @@ func (o *DefaultOperator) GetCodeAgentResolver(agent codeagent.Provider) (*codea
 	logger.Info("GetCodeAgentResolver: resolver ready", "provider", agent)
 	return &r, nil
 }
-

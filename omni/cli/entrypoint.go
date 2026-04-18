@@ -658,8 +658,11 @@ func printAgentListTable(v any) error {
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "AGENT_ID\tNAME\tWORKSPACE\tMEMORY_DIR")
-	if result.AgentInfo != nil {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", result.AgentInfo.ID, result.AgentInfo.Name, result.AgentInfo.WorkspaceDir, result.AgentInfo.MemoryDir)
+	for _, a := range result.Agents {
+		if a == nil {
+			continue
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.ID, a.Name, a.WorkspaceDir, a.MemoryDir)
 	}
 	return tw.Flush()
 }

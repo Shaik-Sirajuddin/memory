@@ -86,12 +86,14 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		"--output-format", "json",
 		"--max-turns", "1",
 	}
-	seedCmd := localCommand(workDir, "claude", seedArgs...)
-	seedOut, seedErr := seedCmd.Output()
+	a.mu.RLock()
+	rt := a.sbxRuntime
+	a.mu.RUnlock()
+	seedOut, seedErr := execOutput(workDir, rt, "claude", seedArgs...)
 	if seedErr != nil {
-		return nil, fmt.Errorf("claude: create: seed session: %w", wrapExitError("claude seed", seedErr))
+		return nil, fmt.Errorf("claude: create: seed session: %w", seedErr)
 	}
-	logger.Debug("Create: session seeded", "id", id, "output", trimSpace(string(seedOut)))
+	logger.Debug("Create: session seeded", "id", id, "output", trimSpace(seedOut))
 
 	logger.Info("Create: session ready", "id", id, "workDir", workDir)
 	return &codeagent.CreateSessionResult{ID: id, Name: p.Name}, nil
@@ -99,10 +101,13 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 
 // Resume launches an interactive claude session via `claude -r <id>`.
 func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
-	a.mu.RLock()
+	a.mu.Lock()
 	workDir := a.workDir
+	if p.RunTime != nil {
+		a.sbxRuntime = *p.RunTime
+	}
 	rt := a.sbxRuntime
-	a.mu.RUnlock()
+	a.mu.Unlock()
 
 	args := []string{"-r", p.ID}
 	if p.ForkSession {

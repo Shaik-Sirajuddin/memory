@@ -21,6 +21,7 @@ const (
 
 var requiredAgentDirs = []string{
 	filepath.Join("entry", "instructions"),
+	filepath.Join("entry", "tasks"),
 	"generated",
 	"state",
 }
@@ -154,6 +155,9 @@ func applyTemplate(workspaceRoot, destDir, agentName, version string) error {
 	if err := writeAgentWorkspaceDoc(ctx); err != nil {
 		return err
 	}
+	if err := writeAgentCollabTasksDir(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -252,6 +256,21 @@ func writeAgentWorkspaceDoc(ctx templateContext) error {
 	return os.WriteFile(dest, []byte(content), 0o644)
 }
 
+// writeAgentCollabTasksDir creates the agent's collab tasks folder at
+// memory/team/entry/tasks/<agentName>/default.yaml inside the workspace.
+// Other agents use this path to post task instructions for this agent.
+func writeAgentCollabTasksDir(ctx templateContext) error {
+	dir := filepath.Join(ctx.WorkspaceRoot, "team", "entry", "tasks", ctx.AgentName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		logger.Error("writeAgentCollabTasksDir: mkdir failed", "dir", dir, "err", err)
+		return err
+	}
+	dest := filepath.Join(dir, "default.yaml")
+	content := "task_group_name: default\nauthor: " + ctx.AgentName + "\ninstructions:\n  -\n"
+	logger.Debug("writeAgentCollabTasksDir: write file", "dest", dest)
+	return os.WriteFile(dest, []byte(content), 0o644)
+}
+
 // seedMemoryRoot creates agents/ and writes metadata.yaml at the memory root.
 func seedMemoryRoot(memDir, version string) error {
 	logger.Debug("seedMemoryRoot: start", "memoryDir", memDir, "version", version)
@@ -313,7 +332,7 @@ func readVersionCode(memDir string) (int, error) {
 
 // AgentMemDir returns the memory directory path for an agent inside its workspace.
 func AgentMemDir(workspaceRoot, agentID string) string {
-	return filepath.Join(workspaceRoot, MemoryDirName, agentID)
+	return filepath.Join(workspaceRoot, MemoryDirName, "agents", agentID)
 }
 
 // NewDefaultAgentMemory returns the default embedded-template AgentMemory implementation.
