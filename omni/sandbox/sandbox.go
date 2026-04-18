@@ -26,8 +26,13 @@ type ProvisionerOptions = provider.ProvisionerOptions
 type GetSandboxParams = provider.GetSandboxParams
 type ListSandboxParams = provider.ListSandboxParams
 type CreateSandboxParams = provider.CreateSandboxParams
+type UpdateSandboxParams = provider.UpdateSandboxParams
+type ParsedSandboxConfig = provider.ParsedSandboxConfig
 type SandboxRuntime = provider.SandboxRuntime
 type SandboxProvisioner = provider.SandboxProvisioner
+type SandboxDirProvisioner = provider.SandboxDirProvisioner
+type SandboxUpdateProvisioner = provider.SandboxUpdateProvisioner
+type SandboxConfigParser = provider.SandboxConfigParser
 type Info = provider.Info
 type Store = provider.Store
 

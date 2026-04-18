@@ -87,6 +87,17 @@ type CreateSandboxParams struct {
 	Config *Config
 }
 
+type UpdateSandboxParams struct {
+	ID     string
+	Config *Config
+}
+
+type ParsedSandboxConfig struct {
+	AllowWrite  bool
+	AccessDirs  []string
+	BlockedDirs []string
+}
+
 type ExecutionResult struct {
 	Stdout   string
 	Stderr   string
@@ -114,6 +125,19 @@ type SandboxProvisioner interface {
 	Create(params CreateSandboxParams) (SandboxRuntime, error)
 	List(ListSandboxParams) ([]SandboxRuntime, error)
 	GetSandbox(params *GetSandboxParams) (SandboxRuntime, error)
+}
+
+type SandboxDirProvisioner interface {
+	CreateDir(path string) error
+	ListDirs(path string) ([]string, error)
+}
+
+type SandboxUpdateProvisioner interface {
+	UpdateSandbox(params *UpdateSandboxParams) (SandboxRuntime, error)
+}
+
+type SandboxConfigParser interface {
+	Parse(config *Config) (*ParsedSandboxConfig, error)
 }
 
 type Info struct {

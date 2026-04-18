@@ -14,6 +14,7 @@ type Provisioner struct {
 	state   provider.ProvisionerState
 	sandbox *provider.Sandbox
 	options provider.ProvisionerOptions
+	parser  provider.SandboxConfigParser
 }
 
 type Runtime struct {
@@ -22,15 +23,49 @@ type Runtime struct {
 }
 
 func New(sbx *provider.Sandbox, opts provider.ProvisionerOptions) (*Provisioner, error) {
-	return &Provisioner{state: provider.NewProvisionerState(opts.Store), sandbox: provider.CloneSandbox(sbx), options: opts}, nil
+	return &Provisioner{
+		state:   provider.NewProvisionerState(opts.Store),
+		sandbox: provider.CloneSandbox(sbx),
+		options: opts,
+		parser:  seatbeltConfigParser{},
+	}, nil
 }
 
 func (p *Provisioner) Create(params provider.CreateSandboxParams) (provider.SandboxRuntime, error) {
+	cfg := params.Config
+	if cfg == nil && p.sandbox != nil {
+		cfg = p.sandbox.Config
+	}
+	if _, err := p.parseConfig(cfg); err != nil {
+		return nil, err
+	}
 	sbx, err := p.state.Create(provider.ProvisionerSeatbelt, params, p.sandbox)
 	if err != nil {
 		return nil, err
 	}
 	return p.wrap(sbx), nil
+}
+
+func (p *Provisioner) UpdateSandbox(params *provider.UpdateSandboxParams) (provider.SandboxRuntime, error) {
+	if params == nil {
+		return nil, fmt.Errorf("sandbox: update sandbox params are required")
+	}
+	id := strings.TrimSpace(params.ID)
+	if id == "" {
+		return nil, fmt.Errorf("sandbox: update sandbox id is required")
+	}
+	if _, err := p.parseConfig(params.Config); err != nil {
+		return nil, err
+	}
+	name := id
+	rt, err := p.GetSandbox(&provider.GetSandboxParams{Name: &name, Active: false})
+	if err != nil {
+		return nil, err
+	}
+	if err := rt.Sync(params.Config); err != nil {
+		return nil, err
+	}
+	return rt, nil
 }
 
 func (p *Provisioner) List(params provider.ListSandboxParams) ([]provider.SandboxRuntime, error) {
@@ -157,4 +192,62 @@ func (p *Provisioner) profile(sbx *provider.Sandbox) string {
 		rules = append(rules, fmt.Sprintf("(deny file-read* file-write* (subpath %q))", dir))
 	}
 	return strings.Join(rules, " ")
+}
+
+func (p *Provisioner) CreateDir(path string) error {
+	target, err := p.resolveDir(path)
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(target, 0o755)
+}
+
+func (p *Provisioner) ListDirs(path string) ([]string, error) {
+	target, err := p.resolveDir(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			out = append(out, entry.Name())
+		}
+	}
+	return out, nil
+}
+
+func (p *Provisioner) resolveDir(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("sandbox: directory path is required")
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	workDir := strings.TrimSpace(p.options.WorkDir)
+	if workDir == "" {
+		return "", fmt.Errorf("sandbox: relative directory path requires provisioner WorkDir")
+	}
+	return filepath.Join(filepath.Clean(workDir), path), nil
+}
+
+type seatbeltConfigParser struct{}
+
+func (seatbeltConfigParser) Parse(config *provider.Config) (*provider.ParsedSandboxConfig, error) {
+	sbx := &provider.Sandbox{Config: provider.CloneConfig(config)}
+	return &provider.ParsedSandboxConfig{
+		AllowWrite:  provider.SandboxAllowsWrite(sbx),
+		AccessDirs:  provider.SandboxAccessDirs(sbx),
+		BlockedDirs: provider.SandboxBlockedDirs(sbx),
+	}, nil
+}
+
+func (p *Provisioner) parseConfig(config *provider.Config) (*provider.ParsedSandboxConfig, error) {
+	if p.parser == nil {
+		return nil, fmt.Errorf("sandbox: config parser is required")
+	}
+	return p.parser.Parse(config)
 }

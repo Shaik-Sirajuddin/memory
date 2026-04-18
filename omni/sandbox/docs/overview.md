@@ -61,3 +61,4 @@ The sandbox package is moving toward a provider-oriented layout so each runtime 
 ## Operational Docs
 
 - `docs/doctor.md` documents runtime prerequisite health detection and installer behavior.
+- `docs/bundle.md` documents required OCI bundle directory format for gVisor runtime creation.

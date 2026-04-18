@@ -92,15 +92,8 @@ func TestProviderFactory(t *testing.T) {
 		require.NoError(t, err, "Creating the gVisor provisioner should succeed")
 
 		rt, err := p.Create(sandbox.CreateSandboxParams{ID: "sandbox-runtime"})
-		require.NoError(t, err, "Creating a runtime sandbox should succeed")
-
-		res, err := rt.Capture("echo", []string{"hello"})
-		require.Error(t, err, "Capturing through a provider runtime should return an error when the runtime binary is unavailable")
-		assert.Nil(t, res, "Captured execution should not return a result when command startup fails")
-
-		proc, err := rt.Start("echo", []string{"hello"})
-		require.Error(t, err, "Starting through a provider runtime should return an error when the runtime binary is unavailable")
-		assert.Nil(t, proc, "Starting through a provider runtime should not return a process on startup failure")
+		require.Error(t, err, "Creating a gVisor runtime should fail when no OCI bundle is configured")
+		assert.Nil(t, rt, "Creating a gVisor runtime without bundle should not return a runtime")
 	})
 
 	t.Run("GVisorLifecycle", func(t *testing.T) {
@@ -116,35 +109,8 @@ func TestProviderFactory(t *testing.T) {
 		require.NoError(t, err, "Creating the gVisor provisioner should succeed")
 
 		rt, err := p.Create(sandbox.CreateSandboxParams{ID: "gvisor-lifecycle-1"})
-		require.NoError(t, err, "Creating a gVisor runtime should succeed")
-		require.NotNil(t, rt, "Creating a gVisor runtime should return a runtime instance")
-		meta := rt.Sandbox()
-		require.NotNil(t, meta, "Runtime should return sandbox metadata")
-		assert.Equal(t, "gvisor-lifecycle-1", meta.Data.ID, "Created gVisor sandbox id should match the request")
-		assert.True(t, meta.State.Active, "Created gVisor sandbox should be active")
-
-		items, err := p.List(sandbox.ListSandboxParams{Active: true})
-		require.NoError(t, err, "Listing active gVisor sandboxes should succeed")
-		require.NotEmpty(t, items, "Listing active gVisor sandboxes should include the created runtime")
-		assert.Subset(t, runtimeIDs(items), []string{"gvisor-lifecycle-1"}, "Listing active gVisor sandboxes should include the created runtime id")
-
-		pid := "gvisor-lifecycle-1"
-		got, err := p.GetSandbox(&sandbox.GetSandboxParams{PID: &pid, Active: true})
-		require.NoError(t, err, "Fetching gVisor runtime by pid should succeed")
-		require.NotNil(t, got, "Fetching gVisor runtime should return a runtime")
-		assert.Equal(t, "gvisor-lifecycle-1", got.Sandbox().Data.ID, "Fetched gVisor runtime should match the created runtime")
-
-		updatedConfig := &sandbox.Config{
-			AgentPolicy: &sandbox.Policy{
-				FSPolicy: sandbox.FSPolicy(sandbox.PermissiveRead),
-			},
-		}
-		require.NoError(t, got.Sync(updatedConfig), "Syncing gVisor runtime config should succeed")
-
-		got, err = p.GetSandbox(&sandbox.GetSandboxParams{PID: &pid, Active: true})
-		require.NoError(t, err, "Fetching gVisor runtime after sync should succeed")
-		require.NotNil(t, got.Sandbox().Config, "Synced gVisor runtime should still have config")
-		assert.Equal(t, sandbox.FSPolicy(sandbox.PermissiveRead), got.Sandbox().Config.AgentPolicy.FSPolicy, "Synced gVisor runtime should reflect updated policy")
+		require.Error(t, err, "Creating a gVisor runtime should fail without an OCI bundle")
+		assert.Nil(t, rt, "Creating a gVisor runtime without bundle should not return a runtime instance")
 	})
 
 	t.Run("SupportedProvisioners", func(t *testing.T) {

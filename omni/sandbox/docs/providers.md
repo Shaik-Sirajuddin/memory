@@ -26,6 +26,7 @@
 
 - best fit for long-lived or higher-risk isolated sessions
 - natural home for Linux-first production sandboxing
+- uses OCI bundle from `WorkDir` when present; otherwise creates a default global bundle; see `docs/bundle.md`
 
 ## bubblewrap
 

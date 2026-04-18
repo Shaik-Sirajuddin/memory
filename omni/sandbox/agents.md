@@ -3,12 +3,12 @@
 > Do not read implementation files unless explicitly asked to.
 
 ### Data Structs
-- `provider/types.go` — `WorkspaceDir`, `MountConfig`, `Policy`, `Config`, `State`, `Data`, `Sandbox`, `ProvisionerOptions`, `GetSandboxParams`, `ListSandboxParams`, `CreateSandboxParams`, `ExecutionResult`, `Info`
+- `provider/types.go` — `WorkspaceDir`, `MountConfig`, `Policy`, `Config`, `State`, `Data`, `Sandbox`, `ProvisionerOptions`, `GetSandboxParams`, `ListSandboxParams`, `CreateSandboxParams`, `UpdateSandboxParams`, `ParsedSandboxConfig`, `ExecutionResult`, `Info`
 - `provider/shared.go` — `ProvisionerState`
 - `doctor.go` — `HealthStatus`
 
 ### Interfaces
-- `provider/types.go` — `SandboxRuntime`, `SandboxProcess`, `SandboxProvisioner`, `Store`
+- `provider/types.go` — `SandboxRuntime`, `SandboxProcess`, `SandboxProvisioner`, `SandboxUpdateProvisioner`, `SandboxDirProvisioner`, `SandboxConfigParser`, `Store`
 - `store/store.go` — `SandboxStore`
 
 ### Factory Functions
@@ -37,6 +37,7 @@
 - `provider/bubblewrap/default.go` — Linux `bwrap`-backed lifecycle implementation
 - `provider/seatbelt/default.go` — macOS `sandbox-exec` / Seatbelt-backed lifecycle implementation
 - Each provider now returns a long-lived `SandboxRuntime`; execution methods live on the runtime instead of the provisioner
+- `provider/gvisor/default.go` and `provider/seatbelt/default.go` implement optional parser-driven `UpdateSandbox` and directory methods (`CreateDir`, `ListDirs`)
 
 ### Persistence
 - `store/default.go` — stores runtime metadata in SQLite and sandbox config in YAML files
