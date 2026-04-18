@@ -57,3 +57,7 @@ This keeps provider-specific logic behind a single interface while allowing each
 ## Current Product Direction
 
 The sandbox package is moving toward a provider-oriented layout so each runtime backend can live under its own implementation folder while the top-level package remains the stable API exposed to the rest of the codebase.
+
+## Operational Docs
+
+- `docs/doctor.md` documents runtime prerequisite health detection and installer behavior.

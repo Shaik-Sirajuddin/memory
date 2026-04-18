@@ -68,7 +68,7 @@ func NewProvisioner(kind ProvisionerKind, sbx *Sandbox, opts ProvisionerOptions)
 func SupportedProvisioners(goos string) []ProvisionerKind {
 	switch goos {
 	case "linux":
-		return []ProvisionerKind{ProvisionerGVisor, ProvisionerBubblewrap}
+		return []ProvisionerKind{ProvisionerGVisor}
 	case "darwin":
 		return []ProvisionerKind{ProvisionerSeatbelt}
 	default:

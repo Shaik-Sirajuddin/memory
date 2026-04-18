@@ -23,6 +23,7 @@ func TestProviderFactory(t *testing.T) {
 	}
 
 	t.Run("NewProvisioner", func(t *testing.T) {
+		t.Log("Running provider construction validation")
 		got, err := sandbox.NewProvisioner(sandbox.ProvisionerGVisor, &sandbox.Sandbox{Config: baseConfig}, sandbox.ProvisionerOptions{Store: testStore})
 		require.NoError(t, err, "Creating a supported provisioner should not return an error")
 		require.NotNil(t, got, "Creating a supported provisioner should return an implementation")
@@ -32,6 +33,7 @@ func TestProviderFactory(t *testing.T) {
 	})
 
 	t.Run("Lifecycle", func(t *testing.T) {
+		t.Log("Running seatbelt lifecycle validation")
 		p, err := sandbox.NewProvisioner(sandbox.ProvisionerSeatbelt, &sandbox.Sandbox{Config: baseConfig}, sandbox.ProvisionerOptions{WorkDir: "/workspace", Store: testStore})
 		require.NoError(t, err, "Creating the seatbelt provisioner should succeed")
 
@@ -48,6 +50,7 @@ func TestProviderFactory(t *testing.T) {
 		listed, err := p.List(sandbox.ListSandboxParams{Active: true})
 		require.NoError(t, err, "Listing active sandboxes should succeed")
 		require.Len(t, listed, 1, "Listing active sandboxes should return the created sandbox")
+		assert.Subset(t, runtimeIDs(listed), []string{"sandbox-1"}, "Listing active sandboxes should include the created sandbox id")
 
 		pid := "sandbox-1"
 		got, err := p.GetSandbox(&sandbox.GetSandboxParams{PID: &pid, Active: true})
@@ -77,7 +80,15 @@ func TestProviderFactory(t *testing.T) {
 	})
 
 	t.Run("RuntimeCaptureAndStart", func(t *testing.T) {
-		p, err := sandbox.NewProvisioner(sandbox.ProvisionerGVisor, &sandbox.Sandbox{Config: baseConfig}, sandbox.ProvisionerOptions{Store: testStore})
+		t.Log("Running deterministic gVisor runtime capture and start failure validation")
+		p, err := sandbox.NewProvisioner(
+			sandbox.ProvisionerGVisor,
+			&sandbox.Sandbox{Config: baseConfig},
+			sandbox.ProvisionerOptions{
+				Store:      testStore,
+				Executable: "runsc-not-installed-for-test",
+			},
+		)
 		require.NoError(t, err, "Creating the gVisor provisioner should succeed")
 
 		rt, err := p.Create(sandbox.CreateSandboxParams{ID: "sandbox-runtime"})
@@ -92,11 +103,67 @@ func TestProviderFactory(t *testing.T) {
 		assert.Nil(t, proc, "Starting through a provider runtime should not return a process on startup failure")
 	})
 
+	t.Run("GVisorLifecycle", func(t *testing.T) {
+		t.Log("Running gVisor lifecycle validation")
+		p, err := sandbox.NewProvisioner(
+			sandbox.ProvisionerGVisor,
+			&sandbox.Sandbox{Config: baseConfig},
+			sandbox.ProvisionerOptions{
+				Store:      testStore,
+				Executable: "runsc-not-required-for-lifecycle-test",
+			},
+		)
+		require.NoError(t, err, "Creating the gVisor provisioner should succeed")
+
+		rt, err := p.Create(sandbox.CreateSandboxParams{ID: "gvisor-lifecycle-1"})
+		require.NoError(t, err, "Creating a gVisor runtime should succeed")
+		require.NotNil(t, rt, "Creating a gVisor runtime should return a runtime instance")
+		meta := rt.Sandbox()
+		require.NotNil(t, meta, "Runtime should return sandbox metadata")
+		assert.Equal(t, "gvisor-lifecycle-1", meta.Data.ID, "Created gVisor sandbox id should match the request")
+		assert.True(t, meta.State.Active, "Created gVisor sandbox should be active")
+
+		items, err := p.List(sandbox.ListSandboxParams{Active: true})
+		require.NoError(t, err, "Listing active gVisor sandboxes should succeed")
+		require.NotEmpty(t, items, "Listing active gVisor sandboxes should include the created runtime")
+		assert.Subset(t, runtimeIDs(items), []string{"gvisor-lifecycle-1"}, "Listing active gVisor sandboxes should include the created runtime id")
+
+		pid := "gvisor-lifecycle-1"
+		got, err := p.GetSandbox(&sandbox.GetSandboxParams{PID: &pid, Active: true})
+		require.NoError(t, err, "Fetching gVisor runtime by pid should succeed")
+		require.NotNil(t, got, "Fetching gVisor runtime should return a runtime")
+		assert.Equal(t, "gvisor-lifecycle-1", got.Sandbox().Data.ID, "Fetched gVisor runtime should match the created runtime")
+
+		updatedConfig := &sandbox.Config{
+			AgentPolicy: &sandbox.Policy{
+				FSPolicy: sandbox.FSPolicy(sandbox.PermissiveRead),
+			},
+		}
+		require.NoError(t, got.Sync(updatedConfig), "Syncing gVisor runtime config should succeed")
+
+		got, err = p.GetSandbox(&sandbox.GetSandboxParams{PID: &pid, Active: true})
+		require.NoError(t, err, "Fetching gVisor runtime after sync should succeed")
+		require.NotNil(t, got.Sandbox().Config, "Synced gVisor runtime should still have config")
+		assert.Equal(t, sandbox.FSPolicy(sandbox.PermissiveRead), got.Sandbox().Config.AgentPolicy.FSPolicy, "Synced gVisor runtime should reflect updated policy")
+	})
+
 	t.Run("SupportedProvisioners", func(t *testing.T) {
-		assert.Equal(t, []sandbox.ProvisionerKind{sandbox.ProvisionerGVisor, sandbox.ProvisionerBubblewrap}, sandbox.SupportedProvisioners("linux"), "Linux should advertise gVisor and bubblewrap support")
+		t.Log("Running host provisioner support validation")
+		assert.Equal(t, []sandbox.ProvisionerKind{sandbox.ProvisionerGVisor}, sandbox.SupportedProvisioners("linux"), "Linux should advertise gVisor support")
 		assert.Equal(t, []sandbox.ProvisionerKind{sandbox.ProvisionerSeatbelt}, sandbox.SupportedProvisioners("darwin"), "macOS should advertise seatbelt support")
 		assert.Nil(t, sandbox.SupportedProvisioners("windows"), "Windows should not advertise unsupported provisioners directly")
 	})
+}
+
+func runtimeIDs(items []sandbox.SandboxRuntime) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == nil || item.Sandbox() == nil || item.Sandbox().Data == nil {
+			continue
+		}
+		ids = append(ids, item.Sandbox().Data.ID)
+	}
+	return ids
 }
 
 type memorySandboxStore struct {
