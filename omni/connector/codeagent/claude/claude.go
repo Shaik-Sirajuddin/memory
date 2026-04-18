@@ -10,9 +10,9 @@ import (
 	"sync"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
-	claudelog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/log"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
+	claudelog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/log"
 	rootsandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
@@ -68,7 +68,6 @@ type claudeAgent struct {
 	systemPrompt    string
 	sessionID       string
 	sbx             *sandbox.Config
-	sbxProvisioner  sandbox.SandboxProvisioner
 	sbxRuntime      sandbox.SandboxRuntime
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
@@ -259,7 +258,6 @@ func (a *claudeAgent) Discover() (codeagent.DiscoverResult, error) {
 func (a *claudeAgent) syncSandboxRuntimeLocked() error {
 	if a.sbx == nil {
 		a.sbxRuntime = nil
-		a.sbxProvisioner = nil
 		return nil
 	}
 
@@ -293,7 +291,6 @@ func (a *claudeAgent) syncSandboxRuntimeLocked() error {
 		return fmt.Errorf("claude: sandbox runtime: create runtime: %w", err)
 	}
 
-	a.sbxProvisioner = provisioner
 	a.sbxRuntime = rt
 	return nil
 }

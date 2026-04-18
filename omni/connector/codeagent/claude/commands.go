@@ -11,9 +11,6 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
-	"github.com/Shaik-Sirajuddin/memory/sandbox/provider/bubblewrap"
-	"github.com/Shaik-Sirajuddin/memory/sandbox/provider/gvisor"
-	"github.com/Shaik-Sirajuddin/memory/sandbox/provider/seatbelt"
 )
 
 const (
@@ -89,10 +86,7 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		"--output-format", "json",
 		"--max-turns", "1",
 	}
-	seedCmd, cmdErr := a.commandFor(workDir, nil, "claude", seedArgs...)
-	if cmdErr != nil {
-		return nil, fmt.Errorf("claude: create: seed command: %w", cmdErr)
-	}
+	seedCmd := localCommand(workDir, "claude", seedArgs...)
 	seedOut, seedErr := seedCmd.Output()
 	if seedErr != nil {
 		return nil, fmt.Errorf("claude: create: seed session: %w", wrapExitError("claude seed", seedErr))
@@ -115,10 +109,15 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		args = append(args, "--fork-session")
 	}
 
-	cmd, err := a.commandFor(workDir, rt, "claude", args...)
-	if err != nil {
-		return nil, fmt.Errorf("claude: resume: sandbox command: %w", err)
+	if rt != nil {
+		if err := rt.Command("claude", args); err != nil {
+			return nil, fmt.Errorf("claude: resume: sandbox command: %w", err)
+		}
+		pid := runtimePID(rt)
+		logger.Info("Resume: interactive sandbox session completed", "pid", pid, "sessionID", p.ID)
+		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: p.ID}, nil
 	}
+	cmd := localCommand(workDir, "claude", args...)
 
 	// Prefer injectable streams (set by tests). In production, open /dev/tty
 	// directly so the child gets a proper controlling terminal for raw mode.
@@ -203,17 +202,10 @@ func (a *claudeAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult,
 	args := buildExecArgs(p.Prompt, model, permMode, systemPrompt, sessionID, p.OutputFormat, p.MaxTurns)
 	logger.Debug("Exec", "workDir", workDir, "args", args)
 
-	cmd, err := a.commandFor(workDir, rt, "claude", args...)
+	response, err := execOutput(workDir, rt, "claude", args...)
 	if err != nil {
-		return nil, fmt.Errorf("claude exec: sandbox command: %w", err)
+		return nil, err
 	}
-
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, wrapExitError("claude exec", err)
-	}
-
-	response := strings.TrimSpace(string(out))
 	logger.Debug("Exec completed", "responseLen", len(response))
 
 	return &codeagent.ExecuteResult{
@@ -241,11 +233,40 @@ func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult,
 	args := buildStreamArgs(p.Prompt, model, permMode, systemPrompt, sessionID, p.MaxTurns)
 	logger.Debug("Stream", "workDir", workDir, "args", args)
 
-	cmd, err := a.commandFor(workDir, rt, "claude", args...)
-	if err != nil {
-		return nil, fmt.Errorf("claude stream: sandbox command: %w", err)
+	ch := make(chan codeagent.StreamEvent, 32)
+	if rt != nil {
+		proc, err := rt.Start("claude", args)
+		if err != nil {
+			return nil, fmt.Errorf("claude stream: sandbox start: %w", err)
+		}
+		go func() {
+			defer close(ch)
+			res, waitErr := proc.Wait()
+			if waitErr != nil {
+				msg := runtimeErrorf("claude stream", res, waitErr).Error()
+				logger.Error("Stream: sandbox process exited with error", "err", msg)
+				ch <- codeagent.StreamEvent{Type: "stop", Done: true, Content: msg}
+				return
+			}
+			scanner := bufio.NewScanner(strings.NewReader(res.Stdout))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "" {
+					continue
+				}
+				ev := parseClaudeLine(line)
+				ch <- ev
+				if ev.Done {
+					return
+				}
+			}
+			ch <- codeagent.StreamEvent{Type: "stop", Done: true}
+			logger.Debug("Stream completed via sandbox runtime")
+		}()
+		return &codeagent.StreamResult{Events: ch, SessionID: sessionID}, nil
 	}
 
+	cmd := localCommand(workDir, "claude", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("claude stream: stdout pipe: %w", err)
@@ -253,9 +274,6 @@ func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult,
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude stream: start process: %w", err)
 	}
-
-	ch := make(chan codeagent.StreamEvent, 32)
-
 	go func() {
 		defer close(ch)
 		scanner := bufio.NewScanner(stdout)
@@ -344,46 +362,51 @@ func wrapExitError(op string, err error) error {
 }
 
 func captureOutput(dir, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
+	cmd := localCommand(dir, name, args...)
 	out, err := cmd.Output()
 	return string(out), err
 }
 
-func (a *claudeAgent) commandFor(workDir string, rt sandbox.SandboxRuntime, name string, args ...string) (*exec.Cmd, error) {
-	a.mu.RLock()
-	provisioner := a.sbxProvisioner
-	runtime := a.sbxRuntime
-	a.mu.RUnlock()
-
-	if runtime == nil || provisioner == nil {
-		cmd := exec.Command(name, args...)
-		cmd.Dir = workDir
-		return cmd, nil
-	}
-
-	sbx := runtime.Sandbox()
-	var executable string
-	var wrappedArgs []string
-	var err error
-
-	switch p := provisioner.(type) {
-	case *bubblewrap.Provisioner:
-		executable, wrappedArgs, err = p.BuildCommand(sbx, name, args)
-	case *seatbelt.Provisioner:
-		executable, wrappedArgs, err = p.BuildCommand(sbx, name, args)
-	case *gvisor.Provisioner:
-		executable, wrappedArgs, err = p.ExecCommand(sbx, name, args)
-	default:
-		return nil, fmt.Errorf("unsupported sandbox provisioner %T", provisioner)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	cmd := exec.Command(executable, wrappedArgs...)
+func localCommand(workDir, name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
 	cmd.Dir = workDir
-	return cmd, nil
+	return cmd
+}
+
+func execOutput(workDir string, rt sandbox.SandboxRuntime, name string, args ...string) (string, error) {
+	if rt == nil {
+		out, err := localCommand(workDir, name, args...).Output()
+		if err != nil {
+			return "", wrapExitError("claude exec", err)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	res, err := rt.Capture(name, args)
+	if err != nil {
+		return "", runtimeErrorf("claude exec", res, err)
+	}
+	return strings.TrimSpace(res.Stdout), nil
+}
+
+func runtimeErrorf(op string, res *sandbox.ExecutionResult, err error) error {
+	if res == nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	if strings.TrimSpace(res.Stderr) != "" {
+		return fmt.Errorf("%s: exit %d: %s", op, res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+	return fmt.Errorf("%s: exit %d: %w", op, res.ExitCode, err)
+}
+
+func runtimePID(rt sandbox.SandboxRuntime) string {
+	if rt == nil {
+		return ""
+	}
+	sbx := rt.Sandbox()
+	if sbx == nil || sbx.State == nil {
+		return ""
+	}
+	return sbx.State.PID
 }
 
 func trimSpace(s string) string {

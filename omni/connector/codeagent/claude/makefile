@@ -12,12 +12,17 @@ GO_JSONSCHEMA := go-jsonschema
 # Targets
 # =========================
 
-.PHONY: generate-schema
+.PHONY: gen-structs-from-schema
 gen-structs-from-schema:
 	$(GO_JSONSCHEMA) \
 		--schema-package=$(SCHEMA_URL)=$(PACKAGE_PATH) \
 		--schema-output=$(SCHEMA_URL)=$(OUTPUT_FILE) \
 		$(SCHEMA_FILE)
+
+.PHONY: gen-schema-from-structs
+gen-schema-from-structs:
+	go run ./gen-schema > $(SCHEMA_FILE)
+
 # Clean generated file
 .PHONY: clean
 clean:
