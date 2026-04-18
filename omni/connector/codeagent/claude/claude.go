@@ -222,6 +222,24 @@ func (a *claudeAgent) WatchDefaultSettings(fn func(*codeagent.Settings)) error {
 	})
 }
 
+// Discover returns models listed in the user settings availableModels field.
+// Falls back to StaticModels when the field is absent or empty.
+func (a *claudeAgent) Discover() (codeagent.DiscoverResult, error) {
+	models, err := a.resolver.DiscoverModels()
+	if err != nil {
+		logger.Warn("Discover: could not read settings, using static models", "err", err)
+	}
+	if len(models) == 0 {
+		models = make([]string, len(StaticModels))
+		copy(models, StaticModels)
+	}
+	ids := make([]codeagent.ModelID, len(models))
+	for i, m := range models {
+		ids[i] = codeagent.ModelID(m)
+	}
+	return codeagent.DiscoverResult{Models: ids}, nil
+}
+
 func (a *claudeAgent) syncSandboxRuntimeLocked() error {
 	if a.sbx == nil {
 		a.sbxRuntime = nil

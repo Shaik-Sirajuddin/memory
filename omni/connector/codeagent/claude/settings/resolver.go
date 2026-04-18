@@ -19,8 +19,9 @@ type rawPermissions struct {
 }
 
 type rawFile struct {
-	Model       *string         `json:"model,omitempty"`
-	Permissions *rawPermissions `json:"permissions,omitempty"`
+	Model           *string         `json:"model,omitempty"`
+	Permissions     *rawPermissions `json:"permissions,omitempty"`
+	AvailableModels []string        `json:"availableModels,omitempty"`
 }
 
 // Resolver implements codeagent.SettingsResolver backed by claude's settings.json.
@@ -215,4 +216,18 @@ func (r *Resolver) StopWatch() {
 		r.watchStop()
 		r.watchStop = nil
 	}
+}
+
+// DiscoverModels reads availableModels from the user-level settings.json.
+// Returns nil when the field is absent (caller should fall back to static list).
+func (r *Resolver) DiscoverModels() ([]string, error) {
+	path, err := UserSettingsPath()
+	if err != nil {
+		return nil, err
+	}
+	f, err := readRawFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return f.AvailableModels, nil
 }
