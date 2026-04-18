@@ -24,6 +24,11 @@ var (
 	omniStoreErr  error
 )
 
+// NewWithDB creates an AgentStore backed by the provided database and session store. Used in tests.
+func NewWithDB(db *sql.DB, sessions codesession.CodeSessionStore) AgentStore {
+	return &sqlOmniAgentStore{db: db, sessions: sessions}
+}
+
 // GetOmniAgentStore returns the singleton OmniAgentStore.
 func GetOmniAgentStore() (AgentStore, error) {
 	omniStoreOnce.Do(func() {

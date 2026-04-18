@@ -44,6 +44,9 @@ func GetDB() (*sql.DB, error) {
 	return db, dbErr
 }
 
+// ApplySchema runs all embedded schema files against conn in sorted order.
+func ApplySchema(conn *sql.DB) error { return applySchema(conn) }
+
 func applySchema(conn *sql.DB) error {
 	entries, err := fs.ReadDir(schemaFS, "schema")
 	if err != nil {

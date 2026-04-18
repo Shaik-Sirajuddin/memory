@@ -16,6 +16,11 @@ var (
 	sessionStoreErr  error
 )
 
+// NewWithDB creates a CodeSessionStore backed by the provided database. Used in tests.
+func NewWithDB(db *sql.DB) CodeSessionStore {
+	return &sqlCodeSessionStore{db: db}
+}
+
 // GetCodeSessionStore returns the singleton CodeSessionStore.
 func GetCodeSessionStore() (CodeSessionStore, error) {
 	sessionStoreOnce.Do(func() {
