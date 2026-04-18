@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -16,6 +18,14 @@ import (
 
 const (
 	Claude codeagent.Provider = "claude"
+)
+
+// interactiveStdin/Stdout/Stderr are the I/O streams used by Resume.
+// They are package-level vars so tests can substitute non-TTY writers.
+var (
+	interactiveStdin  io.Reader = nil // nil = open /dev/tty at runtime
+	interactiveStdout io.Writer = nil
+	interactiveStderr io.Writer = nil
 )
 
 // ============================================================
@@ -64,6 +74,31 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		return nil, fmt.Errorf("claude: create: not authenticated — run 'claude auth login' first")
 	}
 
+	// Seed the session into Claude's session store by running a minimal
+	// print-mode call with --session-id. Without this, `claude -r <id>`
+	// fails with "No conversation found" because Claude only persists a
+	// session after at least one print-mode exchange.
+	a.mu.RLock()
+	model := a.model
+	a.mu.RUnlock()
+
+	seedArgs := []string{
+		"-p", "hello",
+		"--session-id", id,
+		"--model", model,
+		"--output-format", "json",
+		"--max-turns", "1",
+	}
+	seedCmd, cmdErr := a.commandFor(workDir, nil, "claude", seedArgs...)
+	if cmdErr != nil {
+		return nil, fmt.Errorf("claude: create: seed command: %w", cmdErr)
+	}
+	seedOut, seedErr := seedCmd.Output()
+	if seedErr != nil {
+		return nil, fmt.Errorf("claude: create: seed session: %w", wrapExitError("claude seed", seedErr))
+	}
+	logger.Debug("Create: session seeded", "id", id, "output", trimSpace(string(seedOut)))
+
 	logger.Info("Create: session ready", "id", id, "workDir", workDir)
 	return &codeagent.CreateSessionResult{ID: id, Name: p.Name}, nil
 }
@@ -84,12 +119,39 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 	if err != nil {
 		return nil, fmt.Errorf("claude: resume: sandbox command: %w", err)
 	}
+
+	// Prefer injectable streams (set by tests). In production, open /dev/tty
+	// directly so the child gets a proper controlling terminal for raw mode.
+	// Pipe-like fds from os.Stdin/Stdout cause EIO on setRawMode.
+	if interactiveStdin != nil || interactiveStdout != nil || interactiveStderr != nil {
+		cmd.Stdin = interactiveStdin
+		cmd.Stdout = interactiveStdout
+		cmd.Stderr = interactiveStderr
+	} else {
+		tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		if ttyErr == nil {
+			defer tty.Close()
+			cmd.Stdin = tty
+			cmd.Stdout = tty
+			cmd.Stderr = tty
+		} else {
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude: resume: start process: %w", err)
 	}
 
 	pid := fmt.Sprintf("%d", cmd.Process.Pid)
 	logger.Info("Resume: interactive session started", "pid", pid, "sessionID", p.ID)
+
+	// Block until the interactive session ends. This keeps the tty fd open
+	// for the full duration and prevents the caller from racing with the child.
+	_ = cmd.Wait()
+
 	return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: p.ID}, nil
 }
 
