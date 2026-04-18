@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
-	claudelog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/log"
+	claudelog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/log"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	rootsandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
