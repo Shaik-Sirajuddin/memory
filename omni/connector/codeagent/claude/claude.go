@@ -222,19 +222,35 @@ func (a *claudeAgent) WatchDefaultSettings(fn func(*codeagent.Settings)) error {
 	})
 }
 
-// Discover returns models listed in the user settings availableModels field.
-// Falls back to StaticModels when the field is absent or empty.
+// Discover returns the list of available Claude models using a three-tier strategy:
+//  1. Run `claude /model` (piped stdin) and parse the interactive model list output.
+//  2. Fall back to availableModels in the user settings.json.
+//  3. Fall back to StaticModels.
 func (a *claudeAgent) Discover() (codeagent.DiscoverResult, error) {
-	models, err := a.resolver.DiscoverModels()
-	if err != nil {
-		logger.Warn("Discover: could not read settings, using static models", "err", err)
+	a.mu.RLock()
+	workDir := a.workDir
+	a.mu.RUnlock()
+
+	// Tier 1: live CLI discovery.
+	if ids, err := discoverFromCLI(workDir); err == nil && len(ids) > 0 {
+		logger.Debug("Discover: resolved via CLI", "count", len(ids))
+		return codeagent.DiscoverResult{Models: ids}, nil
 	}
-	if len(models) == 0 {
-		models = make([]string, len(StaticModels))
-		copy(models, StaticModels)
+
+	// Tier 2: settings.json availableModels.
+	if models, err := a.resolver.DiscoverModels(); err == nil && len(models) > 0 {
+		ids := make([]codeagent.ModelID, len(models))
+		for i, m := range models {
+			ids[i] = codeagent.ModelID(m)
+		}
+		logger.Debug("Discover: resolved via settings", "count", len(ids))
+		return codeagent.DiscoverResult{Models: ids}, nil
 	}
-	ids := make([]codeagent.ModelID, len(models))
-	for i, m := range models {
+
+	// Tier 3: static fallback.
+	logger.Warn("Discover: using static model list")
+	ids := make([]codeagent.ModelID, len(StaticModels))
+	for i, m := range StaticModels {
 		ids[i] = codeagent.ModelID(m)
 	}
 	return codeagent.DiscoverResult{Models: ids}, nil

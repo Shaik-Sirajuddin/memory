@@ -1,12 +1,16 @@
 package claude
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
@@ -228,4 +232,89 @@ func generateID() string {
 		return "claude-session"
 	}
 	return hex.EncodeToString(b)
+}
+
+// ============================================================
+// CLI model discovery
+// ============================================================
+//
+// Claude Code's /model command outputs an interactive TUI list in the form:
+//
+//   │  ❯ 1. Default (recommended) ✔  Sonnet 4.6 · Best for everyday tasks
+//   │    2. Opus                     Opus 4.7 · Most capable for complex work
+//   │    3. Haiku                    Haiku 4.5 · Fastest for quick answers
+//
+// We pipe "/model\n" to `claude --print` with a short timeout, then parse
+// the output looking for "Sonnet|Opus|Haiku" followed by a version number,
+// and map them to canonical model IDs.
+
+// modelNameRe matches "Sonnet 4.6", "Opus 4.7", "Haiku 4.5" etc.
+var modelNameRe = regexp.MustCompile(`(?i)(sonnet|opus|haiku)\s+(\d+\.\d+)`)
+
+// modelIDMap maps a lowercase "name version" key to a canonical model ID.
+// Updated as new Claude versions are released.
+var modelIDMap = map[string]string{
+	"sonnet 4.6": "claude-sonnet-4-6",
+	"sonnet 4.5": "claude-sonnet-4-5",
+	"opus 4.7":   "claude-opus-4-7",
+	"opus 4.6":   "claude-opus-4-6",
+	"haiku 4.5":  "claude-haiku-4-5-20251001",
+}
+
+// discoverFromCLI pipes "/model\n" to `claude --print`, waits up to 5 s for
+// output, and returns the parsed model IDs. Returns an error (and nil slice)
+// when discovery fails or the output cannot be parsed.
+func discoverFromCLI(workDir string) ([]codeagent.ModelID, error) {
+	cmd := exec.Command("claude", "--print")
+	cmd.Dir = workDir
+	cmd.Stdin = bytes.NewBufferString("/model\n")
+
+	// Use a timer to enforce a hard deadline — the interactive picker may
+	// block waiting for further input.
+	done := make(chan struct{})
+	var out []byte
+	var runErr error
+	go func() {
+		defer close(done)
+		out, runErr = cmd.Output()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		if cmd.Process != nil {
+			cmd.Process.Kill() //nolint:errcheck
+		}
+		<-done
+	}
+
+	if runErr != nil && len(out) == 0 {
+		return nil, fmt.Errorf("discoverFromCLI: %w", runErr)
+	}
+
+	ids := parseModelList(string(out))
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("discoverFromCLI: no models found in output")
+	}
+	return ids, nil
+}
+
+// parseModelList scans raw text for "Sonnet/Opus/Haiku N.N" patterns and
+// returns the corresponding canonical model IDs in the order they appear.
+// Duplicates are suppressed.
+func parseModelList(raw string) []codeagent.ModelID {
+	seen := map[string]bool{}
+	var ids []codeagent.ModelID
+
+	for _, line := range strings.Split(raw, "\n") {
+		matches := modelNameRe.FindAllStringSubmatch(line, -1)
+		for _, m := range matches {
+			key := strings.ToLower(m[1] + " " + m[2])
+			if canonID, ok := modelIDMap[key]; ok && !seen[canonID] {
+				seen[canonID] = true
+				ids = append(ids, codeagent.ModelID(canonID))
+			}
+		}
+	}
+	return ids
 }
