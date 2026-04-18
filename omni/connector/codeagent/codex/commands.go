@@ -33,6 +33,7 @@ const (
 // the same directory inherits the same defaults.
 func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateSessionResult, error) {
 	a.mu.Lock()
+	binPath := a.binPath
 	if p.WorkDir != "" {
 		a.workDir = p.WorkDir
 	}
@@ -49,14 +50,14 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 	a.mu.Unlock()
 
 	// Verify the codex binary is reachable by running `codex --version`.
-	out, err := captureOutput(workDir, "codex", "--version")
+	out, err := captureOutput(workDir, binPath, "--version")
 	if err != nil {
 		return nil, fmt.Errorf("codex: create: binary unreachable: %w", err)
 	}
 	logger.Debug("Create: codex binary ok", "version", trimSpace(out))
 
 	// Verify authentication via `codex auth status` (exit 0 = authenticated).
-	authCmd := exec.Command("codex", "auth", "status")
+	authCmd := exec.Command(binPath, "auth", "status")
 	authCmd.Dir = workDir
 	if err := authCmd.Run(); err != nil {
 		logger.Warn("Create: user not authenticated", "err", err)
@@ -75,6 +76,7 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 
 func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	a.mu.RUnlock()
 
@@ -90,7 +92,7 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 		args = append(args, "--last")
 	}
 
-	cmd := exec.Command("codex", args...)
+	cmd := exec.Command(binPath, args...)
 	cmd.Dir = workDir
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("codex: resume: start process: %w", err)
@@ -225,6 +227,7 @@ func (a *codexAgent) GetSessionConfig(_ codeagent.GetSessionConfigParams) (*code
 
 func (a *codexAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult, error) {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	model := a.model
 	sbx := a.sbx
@@ -233,7 +236,7 @@ func (a *codexAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult, 
 	args := buildExecArgs(p.Prompt, model, p.OutputFormat, p.MaxTurns, sbx)
 	logger.Debug("Exec", "workDir", workDir, "args", args)
 
-	cmd := exec.Command("codex", args...)
+	cmd := exec.Command(binPath, args...)
 	cmd.Dir = workDir
 
 	out, err := cmd.Output()
@@ -257,6 +260,7 @@ func (a *codexAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult, 
 
 func (a *codexAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult, error) {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	model := a.model
 	sbx := a.sbx
@@ -265,7 +269,7 @@ func (a *codexAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult, 
 	args := buildStreamArgs(p.Prompt, model, p.MaxTurns, sbx)
 	logger.Debug("Stream", "workDir", workDir, "args", args)
 
-	cmd := exec.Command("codex", args...)
+	cmd := exec.Command(binPath, args...)
 	cmd.Dir = workDir
 
 	stdout, err := cmd.StdoutPipe()

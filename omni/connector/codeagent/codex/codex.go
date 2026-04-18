@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
+	connlog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/log"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
@@ -24,14 +25,18 @@ var config codeagent.ConfigPaths = codeagent.ConfigPaths{
 	WorkspaceConfigDirs: []string{
 		".codex",
 	},
-	Binary: []string{},
+	// Binary lists candidate names/paths for the codex CLI binary.
+	// lookPath tries each in order and uses the first one found in PATH.
+	Binary: []string{
+		"codex",
+		"/usr/local/bin/codex",
+		"/usr/bin/codex",
+	},
 }
 
 // logger is the package-level structured logger for the codex connector.
-var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-	Level:     slog.LevelDebug,
-	AddSource: true,
-})).With("connector", "codex")
+// Level is driven by OmniConfig.Dev.Debug (Debug when true, Info otherwise).
+var logger = connlog.NewLogger("codex")
 
 // ============================================================
 // Available models
@@ -61,6 +66,7 @@ const DefaultModel = ModelO4Mini
 
 type codexAgent struct {
 	mu              sync.RWMutex
+	binPath         string
 	workDir         string
 	model           string
 	sessionID       string
@@ -74,9 +80,9 @@ type codexAgent struct {
 // New returns a CodeAgent backed by the local codex CLI binary.
 // workDir defaults to the process working directory; model defaults to DefaultModel.
 func New(workDir, model string) (codeagent.CodeAgent, error) {
-	binPath, err := lookPath("codex")
+	binPath, err := resolveBinary(config.Binary)
 	if err != nil {
-		return nil, fmt.Errorf("codex: binary not found in PATH: %w", err)
+		return nil, fmt.Errorf("codex: binary not found: %w", err)
 	}
 	logger.Debug("codex binary located", "path", binPath)
 
@@ -95,6 +101,7 @@ func New(workDir, model string) (codeagent.CodeAgent, error) {
 	logger.Info("codex agent initialised", "workDir", workDir, "model", model, "version", ver)
 
 	return &codexAgent{
+		binPath:  binPath,
 		workDir:  workDir,
 		model:    model,
 		info:     codeagent.CodeAgentInfo{Provider: Codex, Name: "codex", Version: ver},
@@ -210,18 +217,25 @@ func (a *codexAgent) UpdateDefaults(cfg *codeagent.Config) error {
 
 func (a *codexAgent) FetchModels(ctx context.Context) ([]ModelID, error) {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	a.mu.RUnlock()
 
 	// Attempt 1: codex models --json
-	if ids, err := fetchModelsViaCmd(ctx, workDir, "codex", "models", "--json"); err == nil {
+	if ids, err := fetchModelsViaCmd(ctx, workDir, binPath, "models", "--json"); err == nil {
 		logger.Info("FetchModels: resolved via 'codex models --json'", "count", len(ids))
 		return ids, nil
 	}
 
 	// Attempt 2: codex model list
-	if ids, err := fetchModelsViaCmd(ctx, workDir, "codex", "model", "list"); err == nil {
+	if ids, err := fetchModelsViaCmd(ctx, workDir, binPath, "model", "list"); err == nil {
 		logger.Info("FetchModels: resolved via 'codex model list'", "count", len(ids))
+		return ids, nil
+	}
+
+	// Attempt 3: interactive `/models` output capture and parse.
+	if ids, err := fetchModelsViaInteractive(ctx, workDir, binPath); err == nil && len(ids) > 0 {
+		logger.Info("FetchModels: resolved via interactive '/models'", "count", len(ids))
 		return ids, nil
 	}
 
@@ -262,6 +276,80 @@ func fetchModelsViaCmd(ctx context.Context, workDir string, name string, args ..
 		return nil, errors.New("codex: fetch models cmd: no models in output")
 	}
 	return ids, nil
+}
+
+// fetchModelsViaInteractive runs interactive Codex, sends `/models`, pipes the
+// captured terminal output to a temp file, and parses model IDs from that log.
+func fetchModelsViaInteractive(ctx context.Context, workDir, binPath string) ([]ModelID, error) {
+	ictx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	// Try common exit slash commands after /models so the process can terminate
+	// naturally on CLIs that support one of them.
+	stdinScript := "/models\n/exit\n/quit\n"
+	cmd := exec.CommandContext(ictx, binPath)
+	cmd.Dir = workDir
+	cmd.Stdin = strings.NewReader(stdinScript)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return nil, fmt.Errorf("codex: interactive /models: %w", err)
+	}
+
+	raw := string(out)
+	// Pipe output to a file first so parsing logic can consume deterministic input.
+	if f, ferr := os.CreateTemp("", "codex-models-*.log"); ferr == nil {
+		_, _ = f.Write(out)
+		_ = f.Close()
+		if data, rerr := os.ReadFile(f.Name()); rerr == nil {
+			raw = string(data)
+		}
+		_ = os.Remove(f.Name())
+	}
+
+	ids := extractModelIDs(raw)
+	if len(ids) == 0 {
+		return nil, errors.New("codex: interactive /models: no model ids parsed")
+	}
+	return ids, nil
+}
+
+func extractModelIDs(raw string) []ModelID {
+	seen := map[string]struct{}{}
+	var ids []ModelID
+	tokens := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ' ', '\n', '\r', '\t', ',', ';', ':', '"', '\'', '`', '(', ')', '[', ']', '{', '}', '<', '>':
+			return true
+		default:
+			return false
+		}
+	})
+	for _, t := range tokens {
+		token := strings.TrimSpace(strings.ToLower(t))
+		if !looksLikeModelID(token) {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		ids = append(ids, ModelID(token))
+	}
+	return ids
+}
+
+func looksLikeModelID(token string) bool {
+	if strings.HasPrefix(token, "gpt-") && len(token) > len("gpt-") {
+		return true
+	}
+	// Covers common `o`-series model ids like `o3`, `o4-mini`, `o4-mini-high`.
+	if strings.HasPrefix(token, "o") && len(token) > 1 {
+		c := token[1]
+		if c >= '0' && c <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // ============================================================
@@ -421,4 +509,23 @@ func (a *codexAgent) SaveDefaultSettings(s *codeagent.Settings) error {
 
 func (a *codexAgent) WatchDefaultSettings(cb func(*codeagent.Settings)) error {
 	return a.resolver.WatchDefaultSettings(cb)
+}
+
+func (a *codexAgent) Discover() (codeagent.DiscoverResult, error) {
+	models, err := a.FetchModels(context.Background())
+	if err != nil {
+		return codeagent.DiscoverResult{
+			Models: []codeagent.ModelID{codeagent.ModelID(DefaultModel)},
+		}, nil
+	}
+	if len(models) == 0 {
+		return codeagent.DiscoverResult{
+			Models: []codeagent.ModelID{codeagent.ModelID(DefaultModel)},
+		}, nil
+	}
+	out := make([]codeagent.ModelID, 0, len(models))
+	for _, m := range models {
+		out = append(out, codeagent.ModelID(m))
+	}
+	return codeagent.DiscoverResult{Models: out}, nil
 }
