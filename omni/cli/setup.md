@@ -14,7 +14,7 @@ Using Go toolchain (recommended):
 
 ```bash
 cd omni
-go install ./cli/cmd/omni
+  go install ./cli/cmd/omni
 ```
 
 Or install directly from module path:
@@ -53,6 +53,8 @@ go run ./cli/cmd/omni team-init --repo_url <git-repo-url>
 go run ./cli/cmd/omni team list
 go run ./cli/cmd/omni team get --id <workspace-id> --output table
 go run ./cli/cmd/omni team init --repo_url <git-repo-url>
+go run ./cli/cmd/omni doctor check
+go run ./cli/cmd/omni doctor install
 ```
 
 If installed globally:
@@ -66,6 +68,8 @@ omni team-init --repo_url <git-repo-url>
 omni team list
 omni team get --id <workspace-id> --output json
 omni team init --repo_url <git-repo-url>
+omni doctor check
+omni doctor install --output table
 ```
 
 ## Notes
@@ -73,3 +77,6 @@ omni team init --repo_url <git-repo-url>
 - Config is stored by `DefaultOmniConfigResolver` at XDG config path:
   - `memory/omni/config.json`
 - Agent commands delegate to `operator.Operator` methods.
+- `doctor` table output includes:
+  - `STATUS=OK` when runtime is installed
+  - `STATUS=TODO` with `NEXT` action when runtime is missing

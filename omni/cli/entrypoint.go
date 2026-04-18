@@ -12,6 +12,7 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/operator"
+	omnisandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
@@ -42,6 +43,7 @@ func Entrypoint(op operator.Operator, resolver config.OmniConfigResolver) *Defau
 	root.AddCommand(c.newAgentCommand())
 	root.AddCommand(c.newTeamCommand())
 	root.AddCommand(c.newTeamInitCommand())
+	root.AddCommand(c.newDoctorCommand())
 
 	c.root = root
 	return c
@@ -207,6 +209,61 @@ func (c *DefaultCli) newTeamCommand() *cobra.Command {
 	teamCmd.AddCommand(c.newTeamInitSubcommand())
 
 	return teamCmd
+}
+
+func (c *DefaultCli) newDoctorCommand() *cobra.Command {
+	doctorCmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Validate and install sandbox runtime prerequisites",
+	}
+
+	doctorCmd.AddCommand(c.newDoctorCheckCommand())
+	doctorCmd.AddCommand(c.newDoctorInstallCommand())
+	return doctorCmd
+}
+
+func (c *DefaultCli) newDoctorCheckCommand() *cobra.Command {
+	flags := config.ProvisionDoctorCheckFlags()
+
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Check sandbox runtime availability for this OS",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolved := flags
+			if err := loadFlags(cmd, &resolved); err != nil {
+				return err
+			}
+			status := omnisandbox.NewDoctor().Health()
+			return printOutput("doctor.check", resolved.Output, status)
+		},
+	}
+
+	cmd.Flags().StringP("output", "o", flags.Output, "Output format: table|yaml|json")
+	return cmd
+}
+
+func (c *DefaultCli) newDoctorInstallCommand() *cobra.Command {
+	flags := config.ProvisionDoctorInstallFlags()
+
+	cmd := &cobra.Command{
+		Use:   "install",
+		Short: "Install sandbox runtime dependencies when supported",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolved := flags
+			if err := loadFlags(cmd, &resolved); err != nil {
+				return err
+			}
+			doctor := omnisandbox.NewDoctor()
+			if err := doctor.Install(); err != nil {
+				return err
+			}
+			status := doctor.Health()
+			return printOutput("doctor.install", resolved.Output, status)
+		},
+	}
+
+	cmd.Flags().StringP("output", "o", flags.Output, "Output format: table|yaml|json")
+	return cmd
 }
 
 func (c *DefaultCli) newTeamListCommand() *cobra.Command {
@@ -552,6 +609,8 @@ func printTable(kind string, v any) error {
 		return printWorkspaceTable(v)
 	case "team.list":
 		return printTeamListTable(v)
+	case "doctor.check", "doctor.install":
+		return printDoctorTable(v)
 	default:
 		return printJSON(v)
 	}
@@ -642,5 +701,31 @@ func printTeamListTable(v any) error {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\n", t.ID, t.Name, t.WorkspaceDir, t.Agents)
 	}
+	return tw.Flush()
+}
+
+func printDoctorTable(v any) error {
+	status, ok := v.(omnisandbox.HealthStatus)
+	if !ok {
+		return errors.New("invalid doctor payload for table output")
+	}
+
+	state := "OK"
+	next := "-"
+	if !status.Installed {
+		state = "TODO"
+		switch status.Provider {
+		case omnisandbox.ProvisionerGVisor:
+			next = "run: omni doctor install"
+		case omnisandbox.ProvisionerSeatbelt:
+			next = "install/enable sandbox-exec"
+		default:
+			next = "unsupported OS/runtime"
+		}
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "STATUS\tOS\tPROVIDER\tINSTALLED\tBINARY\tNEXT")
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\n", state, status.OS, status.Provider, status.Installed, status.Binary, next)
 	return tw.Flush()
 }
