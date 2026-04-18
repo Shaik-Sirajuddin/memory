@@ -264,6 +264,20 @@ func fetchModelsViaCmd(ctx context.Context, workDir string, name string, args ..
 	return ids, nil
 }
 
+// Discover returns available models via Gemini CLI discovery and falls back to static models.
+func (a *geminiAgent) Discover() (codeagent.DiscoverResult, error) {
+	models, err := a.FetchModels(context.Background())
+	if err != nil {
+		logger.Warn("Discover: could not fetch models, using static models", "err", err)
+		models = StaticModels
+	}
+	ids := make([]codeagent.ModelID, len(models))
+	for i, m := range models {
+		ids[i] = codeagent.ModelID(m)
+	}
+	return codeagent.DiscoverResult{Models: ids}, nil
+}
+
 func (a *geminiAgent) SupportedHooks() (*hooks.Capabilities, error) {
 	return &hooks.Capabilities{
 		PreToolUse: true, PostToolUse: true, PostToolUseFailure: true,
