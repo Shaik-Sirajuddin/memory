@@ -6,6 +6,7 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
+	"github.com/Shaik-Sirajuddin/memory/sandbox/common"
 )
 
 // Binary candidate lists mirror the respective connector configs so that
@@ -65,21 +66,15 @@ func BinaryDirs(provider codeagent.Provider) []string {
 	return dirs
 }
 
-// SandboxConfig returns the default sandbox.Config for the given provider.
-// The workspace policy grants permissive-read access to the workspace.
-// The agent policy adds read access to the directories containing the
-// provider's binary so the agent process can locate its own executable.
-func SandboxConfig(provider codeagent.Provider) *sandbox.Config {
+// SandboxConfig returns the default sandbox.Config for the given provider
+// scoped to workspaceDir. The workspace policy grants permissive-read access
+// to the real workspace directory. The agent policy additionally allows the
+// directories containing the provider binary.
+func SandboxConfig(provider codeagent.Provider, workspaceDir string) *sandbox.Config {
+	cfg := common.AgentDefaultConfig(workspaceDir)
 	binDirs := BinaryDirs(provider)
-	return &sandbox.Config{
-		WorkSpacePolicy: &sandbox.Policy{
-			FSPolicy: sandbox.FSPolicy(sandbox.PermissiveRead),
-		},
-		AgentPolicy: &sandbox.Policy{
-			FSPolicy: sandbox.FSPolicy(sandbox.PermissiveRead),
-			Config: sandbox.MountConfig{
-				AccessDirs: binDirs,
-			},
-		},
+	if len(binDirs) > 0 && cfg.AgentPolicy != nil {
+		cfg.AgentPolicy.Config.AccessDirs = append(cfg.AgentPolicy.Config.AccessDirs, binDirs...)
 	}
+	return cfg
 }

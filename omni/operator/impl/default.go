@@ -118,16 +118,19 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 	// Provision a sandbox runtime for this resume session.
 	var sbxRuntime *sandbox.SandboxRuntime
 	if o.provisioner != nil {
-		cfg := defaults.SandboxConfig(provider)
+		workDir := string(agent.WorkspaceDir)
+		cfg := defaults.SandboxConfig(provider, workDir)
+		configDir := sandboxConfigDir(workDir)
 		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
-			ID:     agent.ID,
-			Config: cfg,
+			ID:        agent.ID,
+			ConfigDir: configDir,
+			Config:    cfg,
 		})
 		if sbxErr != nil {
 			logger.Warn("ResumeAgent: sandbox provision failed", "agentID", agent.ID, "err", sbxErr)
 		} else {
 			sbxRuntime = &rt
-			logger.Debug("ResumeAgent: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider)
+			logger.Debug("ResumeAgent: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider, "configDir", configDir)
 		}
 	}
 
@@ -556,19 +559,23 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 	}
 
 	// Provision a sandbox runtime for this session when the provisioner is available.
-	// The default sandbox config grants the agent access to the provider binary directories.
+	// The sandbox config is scoped to the agent's workspace and persisted under
+	// the workspace GlobalConfigDir so it survives process restarts.
 	var sbxRuntime *sandbox.SandboxRuntime
 	if o.provisioner != nil {
-		cfg := defaults.SandboxConfig(provider)
+		workDir := string(agent.WorkspaceDir)
+		cfg := defaults.SandboxConfig(provider, workDir)
+		configDir := sandboxConfigDir(workDir)
 		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
-			ID:     agent.ID,
-			Config: cfg,
+			ID:        agent.ID,
+			ConfigDir: configDir,
+			Config:    cfg,
 		})
 		if sbxErr != nil {
 			logger.Warn("startAgentSession: sandbox provision failed", "agentID", agent.ID, "err", sbxErr)
 		} else {
 			sbxRuntime = &rt
-			logger.Debug("startAgentSession: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider)
+			logger.Debug("startAgentSession: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider, "configDir", configDir)
 		}
 	}
 
@@ -654,6 +661,16 @@ func (o *DefaultOperator) ensureWorkspaceAndGuideAgent(workspace sandbox.Workspa
 		}
 	}
 	return nil
+}
+
+// sandboxConfigDir returns the absolute path where sandbox config is persisted
+// for the given workspace. It joins the workspace root with the first entry of
+// omniagent.Config.GlobalConfigDirs so the config survives process restarts.
+func sandboxConfigDir(workspaceDir string) string {
+	if len(omniagent.Config.GlobalConfigDirs) == 0 || workspaceDir == "" {
+		return ""
+	}
+	return filepath.Join(workspaceDir, omniagent.Config.GlobalConfigDirs[0])
 }
 
 // GetCodeAgentResolver returns the SettingsResolver for the given provider.
