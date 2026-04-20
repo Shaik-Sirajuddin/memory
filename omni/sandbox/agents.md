@@ -9,12 +9,15 @@
 
 ### Interfaces
 - `provider/types.go` — `SandboxRuntime`, `SandboxProcess`, `SandboxProvisioner`, `SandboxUpdateProvisioner`, `SandboxDirProvisioner`, `SandboxConfigParser`, `Store`
+- `sandbox.go` — `ConfigParser`
+- `provider/gvisor/default.go` — `ConigTransformer`
 - `store/store.go` — `SandboxStore`
 
 ### Factory Functions
 - `sandbox.go` — `NewProvisioner(kind ProvisionerKind, sbx *Sandbox, opts ProvisionerOptions) (SandboxProvisioner, error)` — selects `gvisor`, `bubblewrap`, or `seatbelt`
 - `sandbox.go` — `SupportedProvisioners(goos string) []ProvisionerKind` — host capability map
 - `sandbox.go` — `HostSupportedProvisioners() []ProvisionerKind` — runtime.GOOS wrapper
+- `sandbox.go` — `NewConfigParser() ConfigParser` — default koanf-backed config parser factory
 - `doctor.go` — `NewDoctor() *Doctor` — sandbox doctor for runtime health/install checks
 - `store/default.go` — `GetSandboxStore(application string) (SandboxStore, error)` — singleton YAML+SQLite-backed store factory
 - `provider/gvisor/default.go` — `New(sbx *provider.Sandbox, opts provider.ProvisionerOptions) (*Provisioner, error)`
@@ -25,12 +28,15 @@
 ### Modules
 - `doctor.go` — `Doctor.Health()` detects runtime installation (`runsc` on Linux, `sandbox-exec` on macOS)
 - `doctor.go` — `Doctor.Install()` auto-runs `scripts/install-sandbox-runtime.sh` for Linux when `runsc` is missing
+- `sandbox.go` — `Load(filePath string)`, `Validate(config *Config)`, `Save(config *Config, filePath string)` top-level config parser helpers
+- `default.go` — default `ConfigParser` implementation using koanf for file load/unmarshal and JSON save
 
 ### Shared Helpers
 - `provider/shared.go` — `NewProvisionerState() ProvisionerState` — in-memory lifecycle state holder
 - `provider/shared.go` — `CloneConfig`, `ClonePolicy`, `CloneSandbox` — deep-copy helpers for sandbox state/config
 - `provider/shared.go` — `SandboxAllowsWrite`, `SandboxAccessDirs`, `SandboxBlockedDirs`, `UniqueCleaned` — policy normalization helpers
 - `provider/runtime.go` — `RunCaptured`, `StartCaptured` — provider-neutral captured execution and process start helpers
+- `common/templates.go` — `DefaultAgentTemplate`, `EnsureCommonConfig`, `SyncCommonConfig`, `WriteProviderTemplate` — ConfigDir/common template provisioning helpers
 
 ### Providers
 - `provider/gvisor/default.go` — gVisor `runsc`-backed lifecycle implementation

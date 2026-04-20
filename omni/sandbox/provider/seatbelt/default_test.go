@@ -1,6 +1,8 @@
 package seatbelt
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,8 +132,104 @@ func TestUpdateSandbox(t *testing.T) {
 	})
 }
 
+func TestCreateConfigDirTemplates(t *testing.T) {
+	t.Run("WritesCommonAndSeatbeltTemplates", func(t *testing.T) {
+		configDir := t.TempDir()
+		p, err := New(nil, provider.ProvisionerOptions{
+			WorkDir:      t.TempDir(),
+			ConfigParser: jsonFileConfigParser{},
+			Store:        newMemoryStore("seatbelt"),
+		})
+		require.NoError(t, err, "Creating seatbelt provisioner should not return an error")
+
+		rt, err := p.Create(provider.CreateSandboxParams{
+			ID:        "seatbelt-template-1",
+			ConfigDir: configDir,
+		})
+		require.NoError(t, err, "Create should provision seatbelt runtime and templates")
+		require.NotNil(t, rt, "Create should return runtime")
+
+		require.FileExists(t, filepath.Join(configDir, "config.json"), "Create should provision common sandbox config template file")
+		require.FileExists(t, filepath.Join(configDir, "gen", "seatbelt.profile.sb"), "Create should provision seatbelt template profile")
+	})
+}
+
+func TestRuntimeSyncConfigDir(t *testing.T) {
+	t.Run("PersistsCommonConfigAndProviderTemplate", func(t *testing.T) {
+		configDir := t.TempDir()
+		p, err := New(nil, provider.ProvisionerOptions{
+			WorkDir:      t.TempDir(),
+			ConfigParser: jsonFileConfigParser{},
+			Store:        newMemoryStore("seatbelt"),
+		})
+		require.NoError(t, err, "Creating seatbelt provisioner should not return an error")
+
+		rt, err := p.Create(provider.CreateSandboxParams{
+			ID:        "seatbelt-sync-1",
+			ConfigDir: configDir,
+			Config: &provider.Config{
+				AgentPolicy: &provider.Policy{FSPolicy: provider.FSPolicy(provider.PermissiveRead)},
+			},
+		})
+		require.NoError(t, err, "Create should initialize runtime used for sync test")
+		require.NotNil(t, rt, "Create should return runtime for sync test")
+
+		err = rt.Sync(&provider.Config{
+			AgentPolicy: &provider.Policy{FSPolicy: provider.FSPolicy(provider.Inherit)},
+		})
+		require.NoError(t, err, "Runtime Sync should persist common config and provider template")
+
+		raw, err := os.ReadFile(filepath.Join(configDir, "config.json"))
+		require.NoError(t, err, "Test should read synced common config")
+		var cfg provider.Config
+		require.NoError(t, json.Unmarshal(raw, &cfg), "Synced common config should be valid JSON")
+		require.NotNil(t, cfg.AgentPolicy, "Synced common config should include agent policy")
+		assert.Equal(t, provider.FSPolicy(provider.Inherit), cfg.AgentPolicy.FSPolicy, "Synced common config should store updated policy")
+
+		require.FileExists(t, filepath.Join(configDir, "gen", "seatbelt.profile.sb"), "Sync should keep writing seatbelt template under gen")
+	})
+}
+
 type memoryStore struct {
 	info provider.Info
+}
+
+type jsonFileConfigParser struct{}
+
+func (jsonFileConfigParser) Load(filePath string) (*provider.Config, error) {
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return &provider.Config{}, nil
+	}
+	var cfg provider.Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func (jsonFileConfigParser) Validate(config *provider.Config) error {
+	if config == nil {
+		return fmt.Errorf("config is required")
+	}
+	return nil
+}
+
+func (jsonFileConfigParser) Save(config *provider.Config, filePath string) error {
+	if config == nil {
+		return fmt.Errorf("config is required")
+	}
+	raw, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, raw, 0o644)
 }
 
 func newMemoryStore(application string) *memoryStore {

@@ -27,6 +27,11 @@
 - best fit for long-lived or higher-risk isolated sessions
 - natural home for Linux-first production sandboxing
 - uses OCI bundle from `WorkDir` when present; otherwise creates a default global bundle; see `docs/bundle.md`
+- when `CreateSandboxParams.ConfigDir` is set, common sandbox config is managed at `ConfigDir/config.json`
+- gVisor generated provider config is written to `ConfigDir/gen/config.json`
+- runtime `Sync(config)` validates and persists `ConfigDir/config.json`, then reflects mapped OCI config for the running sandbox
+- when no `--root`/`RuntimeRoot` is configured, provider sets a writable default runsc root under XDG data to avoid read-only `/run` failures
+- in rootless or restricted cgroup hosts, provider adds `-ignore-cgroups` automatically unless caller already sets an explicit cgroup flag
 
 ## bubblewrap
 
@@ -77,3 +82,6 @@
 
 - feature parity with Linux providers is not expected
 - best treated as a host-native compatibility provider
+- when `CreateSandboxParams.ConfigDir` is set, common sandbox config is managed at `ConfigDir/config.json`
+- seatbelt generated provider profile is written to `ConfigDir/gen/seatbelt.profile.sb`
+- runtime `Sync(config)` validates and persists `ConfigDir/config.json`, then reflects profile content for the running sandbox

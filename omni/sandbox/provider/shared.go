@@ -40,6 +40,7 @@ func (s *ProvisionerState) Create(kind ProvisionerKind, params CreateSandboxPara
 		},
 		Data: &Data{
 			ID:          params.ID,
+			ConfigDir:   params.ConfigDir,
 			Application: string(kind),
 			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		},
@@ -182,7 +183,12 @@ func CloneSandbox(sbx *Sandbox) *Sandbox {
 		out.State = &State{PID: sbx.State.PID, Active: sbx.State.Active}
 	}
 	if sbx.Data != nil {
-		out.Data = &Data{ID: sbx.Data.ID, Application: sbx.Data.Application, CreatedAt: sbx.Data.CreatedAt}
+		out.Data = &Data{
+			ID:          sbx.Data.ID,
+			ConfigDir:   sbx.Data.ConfigDir,
+			Application: sbx.Data.Application,
+			CreatedAt:   sbx.Data.CreatedAt,
+		}
 	}
 	return out
 }

@@ -36,6 +36,12 @@ type SandboxConfigParser = provider.SandboxConfigParser
 type Info = provider.Info
 type Store = provider.Store
 
+type ConfigParser interface {
+	Load(filePath string) (*Config, error)
+	Validate(config *Config) error
+	Save(config *Config, filePath string) error
+}
+
 const (
 	Default               = provider.Default
 	AllPermissiveRead     = provider.AllPermissiveRead
@@ -48,7 +54,10 @@ const (
 	ProvisionerSeatbelt   = provider.ProvisionerSeatbelt
 )
 
-var NoProcessFound = errors.New("no process found")
+var (
+	NoProcessFound              = errors.New("no process found")
+	configParser   ConfigParser = defaultConfigParser{}
+)
 
 func NewProvisioner(kind ProvisionerKind, sbx *Sandbox, opts ProvisionerOptions) (SandboxProvisioner, error) {
 	if opts.Store == nil {
@@ -57,6 +66,9 @@ func NewProvisioner(kind ProvisionerKind, sbx *Sandbox, opts ProvisionerOptions)
 			return nil, err
 		}
 		opts.Store = store
+	}
+	if opts.ConfigParser == nil {
+		opts.ConfigParser = configParser
 	}
 	switch kind {
 	case ProvisionerGVisor:
@@ -83,4 +95,20 @@ func SupportedProvisioners(goos string) []ProvisionerKind {
 
 func HostSupportedProvisioners() []ProvisionerKind {
 	return SupportedProvisioners(runtime.GOOS)
+}
+
+func NewConfigParser() ConfigParser {
+	return configParser
+}
+
+func Load(filePath string) (*Config, error) {
+	return configParser.Load(filePath)
+}
+
+func Validate(config *Config) error {
+	return configParser.Validate(config)
+}
+
+func Save(config *Config, filePath string) error {
+	return configParser.Save(config, filePath)
 }

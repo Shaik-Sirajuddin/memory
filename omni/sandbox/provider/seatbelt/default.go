@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	sandboxcommon "github.com/Shaik-Sirajuddin/memory/sandbox/common"
 	"github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
@@ -36,7 +37,16 @@ func (p *Provisioner) Create(params provider.CreateSandboxParams) (provider.Sand
 	if cfg == nil && p.sandbox != nil {
 		cfg = p.sandbox.Config
 	}
+	resolvedCfg, _, err := sandboxcommon.EnsureCommonConfig(params.ConfigDir, p.options.ConfigParser, cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg = resolvedCfg
+	params.Config = cfg
 	if _, err := p.parseConfig(cfg); err != nil {
+		return nil, err
+	}
+	if err := p.syncProvisionConfig(params.ConfigDir, cfg); err != nil {
 		return nil, err
 	}
 	sbx, err := p.state.Create(provider.ProvisionerSeatbelt, params, p.sandbox)
@@ -108,8 +118,26 @@ func (r *Runtime) Sync(config *provider.Config) error {
 	if r.sandbox == nil || r.sandbox.Data == nil {
 		return fmt.Errorf("sandbox: runtime sandbox is required")
 	}
-	r.sandbox.Config = provider.CloneConfig(config)
-	r.provisioner.state.SyncOne(r.sandbox.Data.ID, config)
+	configDir := ""
+	if r.sandbox != nil && r.sandbox.Data != nil {
+		configDir = r.sandbox.Data.ConfigDir
+	}
+	syncedConfig := provider.CloneConfig(config)
+	if strings.TrimSpace(configDir) != "" {
+		if r.provisioner.options.ConfigParser == nil {
+			return fmt.Errorf("sandbox: config parser is required for config dir sync")
+		}
+		updatedConfig, _, err := sandboxcommon.SyncCommonConfig(configDir, r.provisioner.options.ConfigParser, config)
+		if err != nil {
+			return err
+		}
+		syncedConfig = updatedConfig
+	}
+	if err := r.provisioner.syncProvisionConfig(configDir, syncedConfig); err != nil {
+		return err
+	}
+	r.sandbox.Config = provider.CloneConfig(syncedConfig)
+	r.provisioner.state.SyncOne(r.sandbox.Data.ID, syncedConfig)
 	return nil
 }
 
@@ -250,4 +278,11 @@ func (p *Provisioner) parseConfig(config *provider.Config) (*provider.ParsedSand
 		return nil, fmt.Errorf("sandbox: config parser is required")
 	}
 	return p.parser.Parse(config)
+}
+
+func (p *Provisioner) syncProvisionConfig(configDir string, config *provider.Config) error {
+	rt := &provider.Sandbox{Config: provider.CloneConfig(config)}
+	profile := p.profile(rt)
+	_, err := sandboxcommon.WriteProviderTemplate(configDir, "seatbelt.profile.sb", []byte(profile+"\n"))
+	return err
 }

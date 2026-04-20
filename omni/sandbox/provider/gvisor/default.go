@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
+	sandboxcommon "github.com/Shaik-Sirajuddin/memory/sandbox/common"
 	sandboxlog "github.com/Shaik-Sirajuddin/memory/sandbox/log"
 	"github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 	"github.com/adrg/xdg"
@@ -17,11 +21,13 @@ import (
 
 var logger = sandboxlog.NewLogger("gvisor")
 
+var runscNeedsIgnoreCgroupsFn = runscNeedsIgnoreCgroups
+
 type Provisioner struct {
 	state   provider.ProvisionerState
 	sandbox *provider.Sandbox
 	options provider.ProvisionerOptions
-	parser  provider.SandboxConfigParser
+	ConfigTransformer
 }
 
 type Runtime struct {
@@ -31,12 +37,13 @@ type Runtime struct {
 
 func New(sbx *provider.Sandbox, opts provider.ProvisionerOptions) (*Provisioner, error) {
 	logger.Debug("provisioner init", "hasSandbox", sbx != nil, "executable", opts.Executable, "globalArgs", opts.GlobalArgs, "extraArgs", opts.ExtraArgs)
-	return &Provisioner{
+	p := &Provisioner{
 		state:   provider.NewProvisionerState(opts.Store),
 		sandbox: provider.CloneSandbox(sbx),
 		options: opts,
-		parser:  gvisorConfigParser{},
-	}, nil
+	}
+	p.ConfigTransformer = &defaultConfigTransformer{}
+	return p, nil
 }
 
 func (p *Provisioner) Create(params provider.CreateSandboxParams) (provider.SandboxRuntime, error) {
@@ -45,12 +52,28 @@ func (p *Provisioner) Create(params provider.CreateSandboxParams) (provider.Sand
 	if cfg == nil && p.sandbox != nil {
 		cfg = p.sandbox.Config
 	}
-	parsed, err := p.parseConfig(cfg)
+	resolvedCfg, _, err := sandboxcommon.EnsureCommonConfig(params.ConfigDir, p.options.ConfigParser, cfg)
+	if err != nil {
+		logger.Error("runtime config dir prepare failed", "id", params.ID, "configDir", params.ConfigDir, "err", err)
+		return nil, err
+	}
+	cfg = resolvedCfg
+	params.Config = cfg
+	parsed, err := p.ParseConfig(cfg)
 	if err != nil {
 		logger.Error("runtime config parse failed", "id", params.ID, "err", err)
 		return nil, err
 	}
 	logger.Debug("runtime config parsed", "id", params.ID, "allowWrite", parsed.AllowWrite, "accessDirs", parsed.AccessDirs, "blockedDirs", parsed.BlockedDirs)
+	syncOpts, err := p.resolveSyncOptions(params.ID, params.ConfigDir)
+	if err != nil {
+		logger.Error("runtime sync options resolve failed", "id", params.ID, "err", err)
+		return nil, err
+	}
+	if err := p.SyncBundleConfig(params.ID, cfg, syncOpts); err != nil {
+		logger.Error("runtime config sync failed", "id", params.ID, "err", err)
+		return nil, err
+	}
 	if err := p.ensureRuntimeCreated(params.ID); err != nil {
 		logger.Error("runtime create failed", "id", params.ID, "err", err)
 		return nil, err
@@ -80,7 +103,7 @@ func (p *Provisioner) UpdateSandbox(params *provider.UpdateSandboxParams) (provi
 	if id == "" {
 		return nil, fmt.Errorf("sandbox: update sandbox id is required")
 	}
-	parsed, err := p.parseConfig(params.Config)
+	parsed, err := p.ParseConfig(params.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -153,39 +176,6 @@ func (p *Provisioner) wrap(sbx *provider.Sandbox) *Runtime {
 	return &Runtime{sandbox: provider.CloneSandbox(sbx), provisioner: p}
 }
 
-func (r *Runtime) Sandbox() *provider.Sandbox { return provider.CloneSandbox(r.sandbox) }
-
-func (r *Runtime) Command(command string, args []string) error {
-	logger.Debug("runtime command", "id", runtimeID(r.sandbox), "command", command, "args", args)
-	return r.provisioner.run(r.sandbox, command, args, true)
-}
-
-func (r *Runtime) Execute(command string, args []string) error {
-	logger.Debug("runtime execute", "id", runtimeID(r.sandbox), "command", command, "args", args)
-	return r.provisioner.run(r.sandbox, command, args, false)
-}
-
-func (r *Runtime) Capture(command string, args []string) (*provider.ExecutionResult, error) {
-	logger.Debug("runtime capture", "id", runtimeID(r.sandbox), "command", command, "args", args)
-	return r.provisioner.capture(r.sandbox, command, args)
-}
-
-func (r *Runtime) Start(command string, args []string) (provider.SandboxProcess, error) {
-	logger.Debug("runtime start", "id", runtimeID(r.sandbox), "command", command, "args", args)
-	return r.provisioner.start(r.sandbox, command, args)
-}
-
-func (r *Runtime) Sync(config *provider.Config) error {
-	if r.sandbox == nil || r.sandbox.Data == nil {
-		logger.Error("runtime sync failed: missing sandbox")
-		return fmt.Errorf("sandbox: runtime sandbox is required")
-	}
-	r.sandbox.Config = provider.CloneConfig(config)
-	r.provisioner.state.SyncOne(r.sandbox.Data.ID, config)
-	logger.Info("runtime synced", "id", runtimeID(r.sandbox))
-	return nil
-}
-
 func (p *Provisioner) ExecCommand(sbx *provider.Sandbox, command string, args []string) (string, []string, error) {
 	if sbx == nil || sbx.State == nil || strings.TrimSpace(sbx.State.PID) == "" {
 		logger.Error("build command failed: pid missing")
@@ -200,6 +190,35 @@ func (p *Provisioner) ExecCommand(sbx *provider.Sandbox, command string, args []
 		executable = "runsc"
 	}
 	cmdArgs := append([]string{}, p.options.GlobalArgs...)
+	rootSource := "global_args"
+	rootPath, hasRootPath := runscRootFromArgs(cmdArgs)
+	if !containsRunscRootFlag(cmdArgs) {
+		root, err := p.resolveRunscRoot()
+		if err != nil {
+			return "", nil, err
+		}
+		if strings.TrimSpace(root) != "" {
+			cmdArgs = append(cmdArgs, "--root", root)
+			rootPath = root
+			hasRootPath = true
+			rootSource = "resolved_default"
+		}
+	} else if !hasRootPath {
+		rootSource = "global_args_unresolved"
+	}
+	if hasRootPath {
+		info, err := os.Stat(rootPath)
+		if err != nil {
+			logger.Debug("runsc root availability", "root", rootPath, "source", rootSource, "available", false, "err", err)
+		} else {
+			logger.Debug("runsc root availability", "root", rootPath, "source", rootSource, "available", info.IsDir(), "mode", info.Mode().String())
+		}
+	} else {
+		logger.Debug("runsc root availability", "source", rootSource, "available", false)
+	}
+	if shouldAddIgnoreCgroups(cmdArgs) {
+		cmdArgs = append(cmdArgs, "-ignore-cgroups")
+	}
 	cmdArgs = append(cmdArgs, "exec", sbx.State.PID, command)
 	cmdArgs = append(cmdArgs, args...)
 	cmdArgs = append(cmdArgs, p.options.ExtraArgs...)
@@ -317,43 +336,6 @@ func (p *Provisioner) resolveDir(path string) (string, error) {
 	return filepath.Join(filepath.Clean(workDir), path), nil
 }
 
-type runtimeEntry struct {
-	ID     string
-	PID    string
-	Status string
-}
-
-type ociSpec struct {
-	OCIVersion string `json:"ociVersion"`
-	Process    struct {
-		Terminal bool     `json:"terminal"`
-		Args     []string `json:"args"`
-		Cwd      string   `json:"cwd"`
-	} `json:"process"`
-	Root struct {
-		Path     string `json:"path"`
-		Readonly bool   `json:"readonly"`
-	} `json:"root"`
-}
-
-type gvisorConfigParser struct{}
-
-func (gvisorConfigParser) Parse(config *provider.Config) (*provider.ParsedSandboxConfig, error) {
-	sbx := &provider.Sandbox{Config: provider.CloneConfig(config)}
-	return &provider.ParsedSandboxConfig{
-		AllowWrite:  provider.SandboxAllowsWrite(sbx),
-		AccessDirs:  provider.SandboxAccessDirs(sbx),
-		BlockedDirs: provider.SandboxBlockedDirs(sbx),
-	}, nil
-}
-
-func (p *Provisioner) parseConfig(config *provider.Config) (*provider.ParsedSandboxConfig, error) {
-	if p.parser == nil {
-		return nil, fmt.Errorf("sandbox: config parser is required")
-	}
-	return p.parser.Parse(config)
-}
-
 func (p *Provisioner) ensureRuntimeCreated(id string) error {
 	bundle, err := p.resolveBundlePath(id)
 	if err != nil {
@@ -371,8 +353,11 @@ func (p *Provisioner) ensureRuntimeCreated(id string) error {
 			}
 		}
 	}
+	if err := p.validateRootlessUIDMapSetup(); err != nil {
+		return err
+	}
 	if err := p.runscManage("create", "--bundle", bundle, id); err != nil {
-		return fmt.Errorf("sandbox: runsc create %s: %w", id, err)
+		return p.wrapRunscCreateError(id, err)
 	}
 	if err := p.runscManage("start", id); err != nil {
 		_ = p.runscManage("delete", id)
@@ -382,18 +367,186 @@ func (p *Provisioner) ensureRuntimeCreated(id string) error {
 	return nil
 }
 
+func (p *Provisioner) wrapRunscCreateError(id string, err error) error {
+	if err == nil {
+		return nil
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "cannot set up cgroup for root") || strings.Contains(lower, "cgroup.subtree_control") {
+		return fmt.Errorf(
+			"sandbox: runsc create %s: %w: cgroup delegation is unavailable for this user; configure systemd cgroup v2 delegation or run with -ignore-cgroups (omni sandbox adds this automatically for rootless mode)",
+			id,
+			err,
+		)
+	}
+	if strings.Contains(lower, "newuidmap failed") || strings.Contains(lower, "newgidmap failed") {
+		return fmt.Errorf(
+			"sandbox: runsc create %s: %w: rootless user namespace mapping failed; ensure newuidmap/newgidmap are installed with setuid and /etc/subuid,/etc/subgid contain an entry for the current user",
+			id,
+			err,
+		)
+	}
+	return fmt.Errorf("sandbox: runsc create %s: %w", id, err)
+}
+
+func (p *Provisioner) validateRootlessUIDMapSetup() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if os.Geteuid() == 0 {
+		return nil
+	}
+
+	uidMapPath, uidErr := exec.LookPath("newuidmap")
+	if uidErr != nil {
+		return fmt.Errorf("sandbox: rootless gvisor requires newuidmap in PATH; install uidmap/shadow-utils: %w", uidErr)
+	}
+	gidMapPath, gidErr := exec.LookPath("newgidmap")
+	if gidErr != nil {
+		return fmt.Errorf("sandbox: rootless gvisor requires newgidmap in PATH; install uidmap/shadow-utils: %w", gidErr)
+	}
+
+	if err := ensureSetuidBinary(uidMapPath, "newuidmap"); err != nil {
+		return err
+	}
+	if err := ensureSetuidBinary(gidMapPath, "newgidmap"); err != nil {
+		return err
+	}
+
+	currentUser, userErr := user.Current()
+	if userErr != nil {
+		return fmt.Errorf("sandbox: resolve current user for rootless gvisor mapping: %w", userErr)
+	}
+	candidates := userNameCandidates(currentUser.Username, currentUser.Uid)
+	if err := ensureSubIDEntry("/etc/subuid", candidates); err != nil {
+		return err
+	}
+	if err := ensureSubIDEntry("/etc/subgid", candidates); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureSetuidBinary(path string, displayName string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("sandbox: stat %s: %w", displayName, err)
+	}
+	if info.Mode()&os.ModeSetuid == 0 {
+		return fmt.Errorf("sandbox: %s at %s must have setuid bit for rootless mapping", displayName, path)
+	}
+	if runtime.GOOS == "linux" {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("sandbox: stat %s at %s: unexpected file stat type", displayName, path)
+		}
+		if stat.Uid != 0 {
+			return fmt.Errorf("sandbox: %s at %s must be owned by root for rootless mapping", displayName, path)
+		}
+	}
+	return nil
+}
+
+func userNameCandidates(username string, uid string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 3)
+	add := func(value string) {
+		key := strings.TrimSpace(value)
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	add(username)
+	if strings.Contains(username, "\\") {
+		parts := strings.Split(username, "\\")
+		add(parts[len(parts)-1])
+	}
+	if strings.Contains(username, "/") {
+		parts := strings.Split(username, "/")
+		add(parts[len(parts)-1])
+	}
+	add(uid)
+	return out
+}
+
+func ensureSubIDEntry(filePath string, candidates []string) error {
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("sandbox: read %s: %w", filePath, err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		for _, candidate := range candidates {
+			prefix := strings.TrimSpace(candidate) + ":"
+			if strings.HasPrefix(trimmed, prefix) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("sandbox: %s missing entry for current user; add a subordinate id mapping (for example: <user>:100000:65536)", filePath)
+}
+
+func marshalSandboxConfig(config *provider.Config) ([]byte, error) {
+	cfg := provider.CloneConfig(config)
+	if cfg == nil {
+		cfg = &provider.Config{}
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: marshal sandbox config artifact: %w", err)
+	}
+	return raw, nil
+}
+
+func writeArtifactFile(base string, relativePath string, content []byte) error {
+	baseDir := filepath.Clean(base)
+	fullPath := filepath.Join(baseDir, relativePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return fmt.Errorf("sandbox: create artifact dir %s: %w", filepath.Dir(fullPath), err)
+	}
+	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+		return fmt.Errorf("sandbox: write artifact %s: %w", fullPath, err)
+	}
+	return nil
+}
+
 func (p *Provisioner) resolveBundlePath(id string) (string, error) {
 	if bundle, ok := p.bundlePath(); ok {
 		return bundle, nil
 	}
 	return p.ensureDefaultBundle(id)
 }
+func (p *Provisioner) resolveSyncOptions(id, configDir string) (ConfigSyncOptions, error) {
+	bundleDir := ""
+	if _, ok := p.bundlePath(); !ok {
+		resolved, err := p.resolveBundlePath(id)
+		if err != nil {
+			return ConfigSyncOptions{}, err
+		}
+		bundleDir = resolved
+	}
+	return ConfigSyncOptions{
+		ConfigDir:    configDir,
+		ArtifactsDir: p.options.ArtifactsDir,
+		WorkDir:      p.options.WorkDir,
+		BundleDir:    bundleDir,
+	}, nil
+}
 
 func (p *Provisioner) ensureDefaultBundle(id string) (string, error) {
 	if strings.TrimSpace(id) == "" {
 		return "", fmt.Errorf("sandbox: id is required")
 	}
-	path, err := xdg.DataFile(filepath.Join("memory", "sandboxes", "gvisor", "bundles", id, ".keep"))
+	path, err := xdg.DataFile(filepath.Join("memory", "sandboxes", "gvisor", "bundles", id, gvisorBundleKeepFileName))
 	if err != nil {
 		return "", fmt.Errorf("sandbox: resolve default gvisor bundle dir: %w", err)
 	}
@@ -401,16 +554,14 @@ func (p *Provisioner) ensureDefaultBundle(id string) (string, error) {
 	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
 		return "", fmt.Errorf("sandbox: create default gvisor bundle dir: %w", err)
 	}
-	configPath := filepath.Join(bundleDir, "config.json")
+	if err := os.MkdirAll(filepath.Join(bundleDir, gvisorBundleRootFSDirName), 0o755); err != nil {
+		return "", fmt.Errorf("sandbox: create default gvisor rootfs dir: %w", err)
+	}
+	configPath := filepath.Join(bundleDir, gvisorBundleConfigFileName)
 	if _, err := os.Stat(configPath); err == nil {
 		return bundleDir, nil
 	}
-	spec := defaultSpec()
-	raw, err := json.MarshalIndent(spec, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("sandbox: marshal default gvisor spec: %w", err)
-	}
-	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
+	if err := os.WriteFile(configPath, templateConfigJSON, 0o644); err != nil {
 		return "", fmt.Errorf("sandbox: write default gvisor spec: %w", err)
 	}
 	logger.Info("default gvisor bundle created", "id", id, "bundle", bundleDir)
@@ -423,9 +574,59 @@ func defaultSpec() ociSpec {
 	spec.Process.Terminal = false
 	spec.Process.Args = []string{"/bin/sh", "-c", "sleep infinity"}
 	spec.Process.Cwd = "/"
-	spec.Root.Path = "/"
+	spec.Root.Path = "rootfs"
 	spec.Root.Readonly = true
 	return spec
+}
+
+func ociMountsFor(parsed *provider.ParsedSandboxConfig, workDir string) []ociMount {
+	mounts := make([]ociMount, 0, 8)
+	seen := map[string]struct{}{}
+	addMount := func(source, destination string, readOnly bool) {
+		source = strings.TrimSpace(source)
+		destination = strings.TrimSpace(destination)
+		if source == "" || destination == "" {
+			return
+		}
+		source = filepath.Clean(source)
+		destination = filepath.Clean(destination)
+		key := source + "->" + destination
+		if _, ok := seen[key]; ok {
+			return
+		}
+		if _, err := os.Stat(source); err != nil {
+			return
+		}
+		options := []string{"rbind", "nosuid", "nodev"}
+		if readOnly {
+			options = append(options, "ro")
+		} else {
+			options = append(options, "rw")
+		}
+		mounts = append(mounts, ociMount{
+			Destination: destination,
+			Type:        "bind",
+			Source:      source,
+			Options:     options,
+		})
+		seen[key] = struct{}{}
+	}
+
+	// Task default: make host system binaries available inside sandbox.
+	addMount("/usr/bin", "/usr/bin", true)
+
+	// Task default: mount current workspace with full read-write access.
+	if strings.TrimSpace(workDir) != "" {
+		workspace := filepath.Clean(workDir)
+		addMount(workspace, workspace, false)
+	}
+
+	if parsed != nil {
+		for _, dir := range parsed.AccessDirs {
+			addMount(dir, dir, true)
+		}
+	}
+	return mounts
 }
 
 func (p *Provisioner) bundlePath() (string, bool) {
@@ -434,7 +635,7 @@ func (p *Provisioner) bundlePath() (string, bool) {
 		return "", false
 	}
 	bundle := filepath.Clean(workDir)
-	configPath := filepath.Join(bundle, "config.json")
+	configPath := filepath.Join(bundle, gvisorBundleConfigFileName)
 	if _, err := os.Stat(configPath); err != nil {
 		return "", false
 	}
@@ -538,6 +739,12 @@ func (p *Provisioner) runscManageOutput(args ...string) (string, error) {
 	}
 	out, err := cmd.Output()
 	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
+			if stderr != "" {
+				return "", fmt.Errorf("%w: %s", err, stderr)
+			}
+		}
 		return "", err
 	}
 	return string(out), nil
@@ -548,7 +755,15 @@ func (p *Provisioner) runscManage(args ...string) error {
 	if err != nil {
 		return err
 	}
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 func (p *Provisioner) runscManageCommand(args ...string) (*exec.Cmd, error) {
@@ -561,16 +776,95 @@ func (p *Provisioner) runscManageCommand(args ...string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("sandbox: resolve %s: %w", executable, err)
 	}
 	cmdArgs := append([]string{}, p.options.GlobalArgs...)
-	if strings.TrimSpace(p.options.RuntimeRoot) != "" && !containsRunscRootFlag(cmdArgs) {
-		cmdArgs = append(cmdArgs, "--root", p.options.RuntimeRoot)
+	if !containsRunscRootFlag(cmdArgs) {
+		root, err := p.resolveRunscRoot()
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(root) != "" {
+			cmdArgs = append(cmdArgs, "--root", root)
+		}
+	}
+	if shouldAddIgnoreCgroups(cmdArgs) {
+		cmdArgs = append(cmdArgs, "-ignore-cgroups")
 	}
 	cmdArgs = append(cmdArgs, args...)
 	return exec.Command(resolved, cmdArgs...), nil
 }
 
+func (p *Provisioner) resolveRunscRoot() (string, error) {
+	if strings.TrimSpace(p.options.RuntimeRoot) != "" {
+		root := filepath.Clean(p.options.RuntimeRoot)
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return "", fmt.Errorf("sandbox: create runsc root %s: %w", root, err)
+		}
+		return root, nil
+	}
+	path, err := xdg.DataFile(filepath.Join("memory", "sandboxes", "gvisor", "runsc-root", ".keep"))
+	if err != nil {
+		return "", fmt.Errorf("sandbox: resolve default runsc root: %w", err)
+	}
+	root := filepath.Dir(path)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("sandbox: create default runsc root %s: %w", root, err)
+	}
+	return root, nil
+}
+
+func shouldAddIgnoreCgroups(args []string) bool {
+	if containsRunscIgnoreCgroupsFlag(args) {
+		return false
+	}
+	return runscNeedsIgnoreCgroupsFn()
+}
+
+func runscNeedsIgnoreCgroups() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if os.Geteuid() != 0 {
+		return true
+	}
+	const cgroupSubtreeControl = "/sys/fs/cgroup/cgroup.subtree_control"
+	f, err := os.OpenFile(cgroupSubtreeControl, os.O_WRONLY, 0)
+	if err != nil {
+		return true
+	}
+	_ = f.Close()
+	return false
+}
+
 func containsRunscRootFlag(args []string) bool {
 	for i := range args {
 		if args[i] == "--root" || strings.HasPrefix(args[i], "--root=") {
+			return true
+		}
+	}
+	return false
+}
+
+func runscRootFromArgs(args []string) (string, bool) {
+	for i := range args {
+		if args[i] == "--root" {
+			if i+1 < len(args) && strings.TrimSpace(args[i+1]) != "" {
+				return filepath.Clean(args[i+1]), true
+			}
+			return "", false
+		}
+		if strings.HasPrefix(args[i], "--root=") {
+			value := strings.TrimSpace(strings.TrimPrefix(args[i], "--root="))
+			if value == "" {
+				return "", false
+			}
+			return filepath.Clean(value), true
+		}
+	}
+	return "", false
+}
+
+func containsRunscIgnoreCgroupsFlag(args []string) bool {
+	for i := range args {
+		if args[i] == "-ignore-cgroups" || args[i] == "--ignore-cgroups" || strings.HasPrefix(args[i], "-ignore-cgroups=") || strings.HasPrefix(args[i], "--ignore-cgroups=") {
 			return true
 		}
 	}

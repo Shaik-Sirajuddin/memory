@@ -1,0 +1,139 @@
+{
+  "ociVersion": "1.0.2",
+  "mounts": [
+    {
+      "destination": "/bin",
+      "type": "bind",
+      "source": "/bin",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/sbin",
+      "type": "bind",
+      "source": "/sbin",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/lib",
+      "type": "bind",
+      "source": "/lib",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/lib64",
+      "type": "bind",
+      "source": "/lib64",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/usr/bin",
+      "type": "bind",
+      "source": "/usr/bin",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/usr/sbin",
+      "type": "bind",
+      "source": "/usr/sbin",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/usr/lib",
+      "type": "bind",
+      "source": "/usr/lib",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/usr/lib64",
+      "type": "bind",
+      "source": "/usr/lib64",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/etc",
+      "type": "bind",
+      "source": "/etc",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ]
+    }
+  ],
+  "process": {
+    "terminal": false,
+    "args": [
+      "/bin/sh",
+      "-c",
+      "sleep infinity"
+    ],
+    "cwd": "/"
+  },
+  "root": {
+    "path": "rootfs",
+    "readonly": true
+  },
+  "linux": {
+    "namespaces": [
+      {
+        "type": "mount"
+      },
+      {
+        "type": "pid"
+      },
+      {
+        "type": "ipc"
+      },
+      {
+        "type": "uts"
+      },
+      {
+        "type": "network"
+      }
+    ],
+    "maskedPaths": [
+      "/root"
+    ]
+  }
+}
