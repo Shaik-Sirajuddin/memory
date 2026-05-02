@@ -14,10 +14,10 @@ type ConfigPaths struct {
 
 var Config ConfigPaths = ConfigPaths{
 	GlobalConfigDirs: []string{
-		".omni",
+		"memory/config",
 	},
 	WorkspaceConfigDirs: []string{
-		".omni",
+		"memory/config/",
 	},
 }
 
