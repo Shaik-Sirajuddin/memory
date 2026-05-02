@@ -49,11 +49,18 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	if id == "" {
 		id = generateID()
 	}
-	a.sessionID = id
+	// If a pre-existing Claude session ID is provided, attach to it directly
+	// instead of seeding a new one.
+	if p.SessionID != "" {
+		a.sessionID = p.SessionID
+	} else {
+		a.sessionID = id
+	}
 	if p.RunTime != nil {
 		a.sbxRuntime = *p.RunTime
 	}
 	workDir := a.workDir
+	sessionID := a.sessionID
 	a.mu.Unlock()
 
 	// Verify binary.
@@ -71,24 +78,29 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		return nil, fmt.Errorf("claude: create: not authenticated — run 'claude auth login' first")
 	}
 
+	// When attaching to an existing session, skip seeding — the conversation
+	// already exists in Claude's store and a seed call would corrupt it.
+	if p.SessionID != "" {
+		logger.Info("Create: attached to existing session", "id", id, "sessionID", sessionID, "workDir", workDir)
+		return &codeagent.CreateSessionResult{ID: id, Name: p.Name}, nil
+	}
+
 	// Seed the session into Claude's session store by running a minimal
 	// print-mode call with --session-id. Without this, `claude -r <id>`
 	// fails with "No conversation found" because Claude only persists a
 	// session after at least one print-mode exchange.
 	a.mu.RLock()
 	model := a.model
+	rt := a.sbxRuntime
 	a.mu.RUnlock()
 
 	seedArgs := []string{
 		"-p", "hello",
-		"--session-id", id,
+		"--session-id", sessionID,
 		"--model", model,
 		"--output-format", "json",
 		"--max-turns", "1",
 	}
-	a.mu.RLock()
-	rt := a.sbxRuntime
-	a.mu.RUnlock()
 	seedOut, seedErr := execOutput(workDir, rt, "claude", seedArgs...)
 	if seedErr != nil {
 		return nil, fmt.Errorf("claude: create: seed session: %w", seedErr)
@@ -109,7 +121,13 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 	rt := a.sbxRuntime
 	a.mu.Unlock()
 
-	args := []string{"-r", p.ID}
+	// Prefer the explicit Claude session ID when provided; fall back to p.ID.
+	resumeID := p.ID
+	if p.SessionID != "" {
+		resumeID = p.SessionID
+	}
+
+	args := []string{"-r", resumeID}
 	if p.ForkSession {
 		args = append(args, "--fork-session")
 	}
@@ -119,8 +137,8 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 			return nil, fmt.Errorf("claude: resume: sandbox command: %w", err)
 		}
 		pid := runtimePID(rt)
-		logger.Info("Resume: interactive sandbox session completed", "pid", pid, "sessionID", p.ID)
-		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: p.ID}, nil
+		logger.Info("Resume: interactive sandbox session completed", "pid", pid, "sessionID", resumeID)
+		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resumeID}, nil
 	}
 	cmd := localCommand(workDir, "claude", args...)
 
@@ -150,13 +168,13 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 	}
 
 	pid := fmt.Sprintf("%d", cmd.Process.Pid)
-	logger.Info("Resume: interactive session started", "pid", pid, "sessionID", p.ID)
+	logger.Info("Resume: interactive session started", "pid", pid, "sessionID", resumeID)
 
 	// Block until the interactive session ends. This keeps the tty fd open
 	// for the full duration and prevents the caller from racing with the child.
 	_ = cmd.Wait()
 
-	return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: p.ID}, nil
+	return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resumeID}, nil
 }
 
 // List is not supported by the Claude CLI.
