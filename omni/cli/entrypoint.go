@@ -5,15 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
+	"github.com/Shaik-Sirajuddin/memory/omniagent"
 	"github.com/Shaik-Sirajuddin/memory/operator"
+	"github.com/Shaik-Sirajuddin/memory/operator/impl/defaults"
 	omnisandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"github.com/Shaik-Sirajuddin/memory/store/codesession"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
 	"github.com/spf13/cobra"
@@ -152,6 +156,8 @@ func (c *DefaultCli) newAgentCommand() *cobra.Command {
 	agentCmd.AddCommand(c.newAgentResumeCommand())
 	agentCmd.AddCommand(c.newAgentUpgradeCommand())
 	agentCmd.AddCommand(c.newAgentDeleteCommand())
+	agentCmd.AddCommand(c.newAgentSwitchProviderCommand())
+	agentCmd.AddCommand(c.newAgentSandboxCommand())
 
 	return agentCmd
 }
@@ -460,6 +466,7 @@ func (c *DefaultCli) newAgentCreateCommand() *cobra.Command {
 				Provider:           codeagent.Provider(resolved.Provider),
 				Model:              resolved.Model,
 				AllowGeneratedName: resolved.AllowGeneratedName,
+				ResumeIfExists:     resolved.ResumeIfExists,
 				Interactive:        resolved.Interactive,
 			})
 		},
@@ -469,6 +476,7 @@ func (c *DefaultCli) newAgentCreateCommand() *cobra.Command {
 	createCmd.Flags().StringP("provider", "p", flags.Provider, "Agent provider (default: gemini)")
 	createCmd.Flags().String("model", flags.Model, "Agent model (default depends on provider)")
 	createCmd.Flags().Bool("allow_generated_name", flags.AllowGeneratedName, "Allow operator to generate agent name when name is empty")
+	createCmd.Flags().BoolP("resume_if_exists", "r", flags.ResumeIfExists, "Resume agent when the provided name already exists in workspace")
 	createCmd.Flags().Bool("interactive", flags.Interactive, "Launch agent after create")
 
 	return createCmd
@@ -490,13 +498,19 @@ func (c *DefaultCli) newAgentResumeCommand() *cobra.Command {
 				return err
 			}
 			return c.operator.ResumeAgent(operator.ResumeAgentParams{
-				Workspace: sandbox.WorkspaceDir(resolved.Workspace),
-				Name:      args[0],
+				Workspace:     sandbox.WorkspaceDir(resolved.Workspace),
+				Name:          args[0],
+				InitIfMissing: resolved.InitIfMissing,
+				Provider:      codeagent.Provider(resolved.Provider),
+				Model:         resolved.Model,
 			})
 		},
 	}
 
 	cmd.Flags().String("workspace", flags.Workspace, "Workspace directory")
+	cmd.Flags().BoolP("init_if_missing", "i", flags.InitIfMissing, "Create agent when requested name is not found in workspace")
+	cmd.Flags().StringP("provider", "p", flags.Provider, "Provider used only when --init_if_missing creates a new agent")
+	cmd.Flags().String("model", flags.Model, "Model used only when --init_if_missing creates a new agent")
 	return cmd
 }
 
@@ -533,8 +547,9 @@ func (c *DefaultCli) newAgentDeleteCommand() *cobra.Command {
 	flags := config.ProvisionAgentDeleteFlags()
 
 	deleteCmd := &cobra.Command{
-		Use:   "delete",
-		Short: "Delete agent from index by id",
+		Use:   "delete [name]",
+		Short: "Delete agent from index by id or name",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if c.operator == nil {
 				return errors.New("operator is required")
@@ -543,16 +558,250 @@ func (c *DefaultCli) newAgentDeleteCommand() *cobra.Command {
 			if err := loadFlags(cmd, &resolved); err != nil {
 				return err
 			}
+			if len(args) == 1 {
+				resolved.Name = args[0]
+			}
 			if resolved.ID == "" {
-				return errors.New("agent id is required")
+				if resolved.Name == "" {
+					return errors.New("agent id or name is required")
+				}
+				id, err := c.resolveAgentIDByName(resolved.Workspace, resolved.Name)
+				if err != nil {
+					return err
+				}
+				resolved.ID = id
 			}
 			return c.operator.DeleteAgent(operator.DeleteAgentParams{ID: resolved.ID})
 		},
 	}
 
 	deleteCmd.Flags().String("id", flags.ID, "Agent ID")
+	deleteCmd.Flags().String("name", flags.Name, "Agent name (alternative to id)")
+	deleteCmd.Flags().String("workspace", flags.Workspace, "Workspace directory (used with name)")
 
 	return deleteCmd
+}
+
+func (c *DefaultCli) newAgentSwitchProviderCommand() *cobra.Command {
+	flags := config.ProvisionAgentSwitchProviderFlags()
+
+	switchCmd := &cobra.Command{
+		Use:   "switch-provider [name]",
+		Short: "Switch an agent to a different provider",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c.operator == nil {
+				return errors.New("operator is required")
+			}
+			resolved := flags
+			if err := loadFlags(cmd, &resolved); err != nil {
+				return err
+			}
+			if len(args) == 1 {
+				resolved.Name = args[0]
+			}
+			if strings.TrimSpace(resolved.Provider) == "" {
+				return errors.New("provider is required")
+			}
+			if resolved.ID == "" {
+				if resolved.Name == "" {
+					return errors.New("agent id or name is required")
+				}
+				id, err := c.resolveAgentIDByName(resolved.Workspace, resolved.Name)
+				if err != nil {
+					return err
+				}
+				resolved.ID = id
+			}
+			return c.operator.SwitchProvider(operator.SwitchProviderParams{
+				ID:         resolved.ID,
+				Provider:   codeagent.Provider(resolved.Provider),
+				CleanStart: resolved.CleanStart,
+			})
+		},
+	}
+
+	switchCmd.Flags().String("id", flags.ID, "Agent ID")
+	switchCmd.Flags().String("name", flags.Name, "Agent name (alternative to id)")
+	switchCmd.Flags().String("workspace", flags.Workspace, "Workspace directory (used with name)")
+	switchCmd.Flags().StringP("provider", "p", flags.Provider, "Target provider")
+	switchCmd.Flags().Bool("clean_start", flags.CleanStart, "Force a clean session instead of reusing an active one")
+
+	return switchCmd
+}
+
+func (c *DefaultCli) newAgentSandboxCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sandbox",
+		Short: "Manage sandbox runtime for an agent",
+	}
+	cmd.AddCommand(c.newAgentSandboxSyncCommand())
+	return cmd
+}
+
+type agentSandboxSyncResult struct {
+	AgentID     string `json:"agent_id" yaml:"agent_id"`
+	Name        string `json:"name" yaml:"name"`
+	Workspace   string `json:"workspace" yaml:"workspace"`
+	Provider    string `json:"provider" yaml:"provider"`
+	Provisioner string `json:"provisioner" yaml:"provisioner"`
+	Created     bool   `json:"created" yaml:"created"`
+	Synced      bool   `json:"synced" yaml:"synced"`
+}
+
+func (c *DefaultCli) newAgentSandboxSyncCommand() *cobra.Command {
+	flags := config.ProvisionAgentSandboxSyncFlags()
+
+	cmd := &cobra.Command{
+		Use:   "sync [name]",
+		Short: "Sync sandbox config for an agent runtime",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c.operator == nil {
+				return errors.New("operator is required")
+			}
+			resolved := flags
+			if err := loadFlags(cmd, &resolved); err != nil {
+				return err
+			}
+			if len(args) == 1 {
+				resolved.Name = args[0]
+			}
+			if resolved.ID == "" && strings.TrimSpace(resolved.Name) == "" {
+				return errors.New("agent id or name is required")
+			}
+
+			agent, err := c.resolveAgentInfo(resolved.Workspace, resolved.ID, resolved.Name)
+			if err != nil {
+				return err
+			}
+
+			provider := strings.TrimSpace(resolved.Provider)
+			if provider == "" {
+				provider = string(resolveActiveProvider(agent.ID))
+			}
+
+			kinds := omnisandbox.HostSupportedProvisioners()
+			if len(kinds) == 0 {
+				return errors.New("sandbox provisioner is not supported on this OS")
+			}
+			kind := kinds[0]
+
+			provisioner, err := omnisandbox.NewProvisioner(kind, nil, omnisandbox.ProvisionerOptions{})
+			if err != nil {
+				return fmt.Errorf("init sandbox provisioner: %w", err)
+			}
+
+			cfg := defaults.SandboxConfig(codeagent.Provider(provider), string(agent.WorkspaceDir))
+			pid := agent.ID
+			rt, err := provisioner.GetSandbox(&omnisandbox.GetSandboxParams{PID: &pid})
+			created := false
+			if err != nil {
+				rt, err = provisioner.Create(omnisandbox.CreateSandboxParams{
+					ID:        agent.ID,
+					ConfigDir: sandboxConfigDir(string(agent.WorkspaceDir), agent.Name),
+					Config:    cfg,
+				})
+				if err != nil {
+					return fmt.Errorf("create sandbox runtime: %w", err)
+				}
+				created = true
+			}
+
+			if err := rt.Sync(cfg); err != nil {
+				return fmt.Errorf("sync sandbox runtime: %w", err)
+			}
+
+			result := agentSandboxSyncResult{
+				AgentID:     agent.ID,
+				Name:        agent.Name,
+				Workspace:   string(agent.WorkspaceDir),
+				Provider:    provider,
+				Provisioner: string(kind),
+				Created:     created,
+				Synced:      true,
+			}
+			return printOutput("agent.sandbox.sync", resolved.Output, result)
+		},
+	}
+
+	cmd.Flags().String("id", flags.ID, "Agent ID")
+	cmd.Flags().String("name", flags.Name, "Agent name (alternative to id)")
+	cmd.Flags().String("workspace", flags.Workspace, "Workspace directory")
+	cmd.Flags().StringP("provider", "p", flags.Provider, "Provider used to resolve sandbox defaults")
+	cmd.Flags().StringP("output", "o", flags.Output, "Output format: table|yaml|json")
+	return cmd
+}
+
+func (c *DefaultCli) resolveAgentIDByName(workspace, name string) (string, error) {
+	agent, err := c.resolveAgentInfo(workspace, "", name)
+	if err != nil {
+		return "", err
+	}
+	return agent.ID, nil
+}
+
+func (c *DefaultCli) resolveAgentInfo(workspace, id, name string) (*omniagent.AgentInfo, error) {
+	if c.operator == nil {
+		return nil, errors.New("operator is required")
+	}
+	needleName := strings.TrimSpace(name)
+	needleID := strings.TrimSpace(id)
+	if needleName == "" && needleID == "" {
+		return nil, errors.New("agent id or name is required")
+	}
+	result, err := c.operator.ListCodeAgents(operator.GetCodeAgentsParams{
+		Workspace: sandbox.WorkspaceDir(workspace),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var matches []*omniagent.AgentInfo
+	for _, a := range result.Agents {
+		if a == nil {
+			continue
+		}
+		if needleID != "" && strings.TrimSpace(a.ID) == needleID {
+			matches = append(matches, a)
+			continue
+		}
+		if needleName != "" && strings.TrimSpace(a.Name) == needleName {
+			matches = append(matches, a)
+		}
+	}
+	if len(matches) == 0 {
+		if needleID != "" {
+			return nil, fmt.Errorf("agent id %q not found", needleID)
+		}
+		return nil, fmt.Errorf("agent %q not found", needleName)
+	}
+	if len(matches) > 1 {
+		if needleID != "" {
+			return nil, fmt.Errorf("multiple agents with id %q found; use --id", needleID)
+		}
+		return nil, fmt.Errorf("multiple agents named %q found; use --id", needleName)
+	}
+	return matches[0], nil
+}
+
+func resolveActiveProvider(agentID string) codeagent.Provider {
+	provider := codeagent.Provider(operator.DefaultProvider)
+	sessionStore, err := codesession.GetCodeSessionStore()
+	if err != nil || sessionStore == nil {
+		return provider
+	}
+	session, err := sessionStore.GetSession(agentID)
+	if err != nil || session == nil || session.Model == nil || session.Model.Provider == "" {
+		return provider
+	}
+	return session.Model.Provider
+}
+
+func sandboxConfigDir(workspaceDir, agentName string) string {
+	if strings.TrimSpace(workspaceDir) == "" || strings.TrimSpace(agentName) == "" {
+		return ""
+	}
+	return filepath.Join(workspaceDir, operator.MemoryDirName, "agents", agentName, "sandbox")
 }
 
 func loadFlags(cmd *cobra.Command, target any) error {
@@ -605,6 +854,8 @@ func printTable(kind string, v any) error {
 		return printDiscoverTable(v)
 	case "agent.list":
 		return printAgentListTable(v)
+	case "agent.sandbox.sync":
+		return printAgentSandboxSyncTable(v)
 	case "team.get":
 		return printWorkspaceTable(v)
 	case "team.list":
@@ -714,21 +965,43 @@ func printDoctorTable(v any) error {
 	}
 
 	state := "OK"
-	next := "-"
+	next := status.Next
+	if strings.TrimSpace(next) == "" {
+		next = "-"
+	}
 	if !status.Installed {
 		state = "TODO"
-		switch status.Provider {
-		case omnisandbox.ProvisionerGVisor:
-			next = "run: omni doctor install"
-		case omnisandbox.ProvisionerSeatbelt:
-			next = "install/enable sandbox-exec"
-		default:
-			next = "unsupported OS/runtime"
+		if strings.TrimSpace(next) == "-" {
+			switch status.Provider {
+			case omnisandbox.ProvisionerGVisor:
+				next = "run: omni doctor install"
+			case omnisandbox.ProvisionerSeatbelt:
+				next = "install/enable sandbox-exec"
+			default:
+				next = "unsupported OS/runtime"
+			}
 		}
+	}
+	missing := "-"
+	if len(status.Missing) > 0 {
+		missing = strings.Join(status.Missing, ",")
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "STATUS\tOS\tPROVIDER\tINSTALLED\tBINARY\tNEXT")
-	fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\n", state, status.OS, status.Provider, status.Installed, status.Binary, next)
+	fmt.Fprintln(tw, "STATUS\tOS\tPROVIDER\tINSTALLED\tBINARY\tMISSING\tNEXT")
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\t%s\n", state, status.OS, status.Provider, status.Installed, status.Binary, missing, next)
+	return tw.Flush()
+}
+
+func printAgentSandboxSyncTable(v any) error {
+	result, ok := v.(agentSandboxSyncResult)
+	if !ok {
+		return errors.New("invalid agent sandbox sync payload for table output")
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "AGENT_ID\tNAME\tWORKSPACE\tPROVIDER\tPROVISIONER\tCREATED\tSYNCED")
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%t\t%t\n",
+		result.AgentID, result.Name, result.Workspace, result.Provider, result.Provisioner, result.Created, result.Synced)
 	return tw.Flush()
 }

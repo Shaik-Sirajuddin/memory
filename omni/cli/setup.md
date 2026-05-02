@@ -49,6 +49,9 @@ go run ./cli/cmd/omni config set --memory=true --autosync=true
 go run ./cli/cmd/omni agent discover
 go run ./cli/cmd/omni agent list --workspace /absolute/workspace/path
 go run ./cli/cmd/omni agent init my-agent --workspace /absolute/workspace/path -p gemini --model gemini3.0-flash --interactive=true
+go run ./cli/cmd/omni agent delete my-agent --workspace /absolute/workspace/path
+go run ./cli/cmd/omni agent switch-provider my-agent --workspace /absolute/workspace/path -p claude
+go run ./cli/cmd/omni agent sandbox sync my-agent --workspace /absolute/workspace/path
 go run ./cli/cmd/omni team-init --repo_url <git-repo-url>
 go run ./cli/cmd/omni team list
 go run ./cli/cmd/omni team get --id <workspace-id> --output table
@@ -64,6 +67,9 @@ omni --help
 omni config get
 omni config get --output yaml
 omni agent discover
+omni agent delete my-agent --workspace /absolute/workspace/path
+omni agent switch-provider my-agent --workspace /absolute/workspace/path -p codex
+omni agent sandbox sync my-agent --workspace /absolute/workspace/path
 omni team-init --repo_url <git-repo-url>
 omni team list
 omni team get --id <workspace-id> --output json
@@ -79,4 +85,8 @@ omni doctor install --output table
 - Agent commands delegate to `operator.Operator` methods.
 - `doctor` table output includes:
   - `STATUS=OK` when runtime is installed
-  - `STATUS=TODO` with `NEXT` action when runtime is missing
+  - `STATUS=TODO` with `MISSING` and `NEXT` actions when prerequisites are missing
+- Linux rootless gVisor also requires:
+  - `newuidmap`
+  - `newgidmap`
+  - `omni doctor install` now attempts to install these uidmap helpers in addition to `runsc`
