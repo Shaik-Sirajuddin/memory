@@ -7,7 +7,7 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
-	
+
 const (
 	DefaultProvider        = "claude"
 	DefaultModel           = "claude-sonnet-4-6"
@@ -28,12 +28,16 @@ type CreateAgentParams struct {
 	Provider           codeagent.Provider   `json:"provider,omitempty"`
 	Model              string               `json:"model,omitempty"`
 	AllowGeneratedName bool                 `json:"allow_generated_name,omitempty"`
+	ResumeIfExists     bool                 `json:"resume_if_exists,omitempty"`
 	Interactive        bool                 `json:"interactive"` // launch after create; default true
 }
 
 type ResumeAgentParams struct {
-	Workspace sandbox.WorkspaceDir `json:"workspace,omitempty"`
-	Name      string               `json:"name,omitempty"`
+	Workspace     sandbox.WorkspaceDir `json:"workspace,omitempty"`
+	Name          string               `json:"name,omitempty"`
+	InitIfMissing bool                 `json:"init_if_missing,omitempty"`
+	Provider      codeagent.Provider   `json:"provider,omitempty"`
+	Model         string               `json:"model,omitempty"`
 }
 
 type DeleteAgentParams struct {

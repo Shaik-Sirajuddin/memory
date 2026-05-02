@@ -47,8 +47,114 @@ type DefaultOperator struct {
 
 // SwitchProvider implements [Operator].
 // SwitchProvider when switching between models , if a non fill session exists matching provider , agent , session is reused , override by CleanStart
-func (o *DefaultOperator) SwitchProvider(operator.SwitchProviderParams) error {
-	panic("unimplemented")
+func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) error {
+	if strings.TrimSpace(params.ID) == "" {
+		return fmt.Errorf("operator: agent id is required")
+	}
+	if params.Provider == "" {
+		return fmt.Errorf("operator: provider is required")
+	}
+	if o.sessionStore == nil {
+		return fmt.Errorf("operator: session store is not configured")
+	}
+	agent, err := o.store.GetAgent(params.ID)
+	if err != nil {
+		return fmt.Errorf("operator: switch provider: load agent %q: %w", params.ID, err)
+	}
+	factory := o.newCodeAgent
+	if factory == nil {
+		return fmt.Errorf("operator: code agent factory is not configured")
+	}
+
+	sessions, err := o.sessionStore.ListSessions(agent.ID, nil)
+	if err != nil {
+		return fmt.Errorf("operator: switch provider: list sessions for agent %q: %w", agent.ID, err)
+	}
+
+	target := (*omniagent.CodeSession)(nil)
+	if !params.CleanStart {
+		for _, s := range sessions {
+			if s != nil && s.Model != nil && s.Model.Provider == params.Provider {
+				target = s
+				break
+			}
+		}
+	}
+
+	if target == nil {
+		model := operator.DefaultModel
+		ca, err := factory(params.Provider, string(agent.WorkspaceDir), model)
+		if err != nil {
+			return fmt.Errorf("operator: switch provider: init code agent: %w", err)
+		}
+
+		var sbxRuntime *sandbox.SandboxRuntime
+		if o.provisioner != nil {
+			workDir := string(agent.WorkspaceDir)
+			cfg := defaults.SandboxConfig(params.Provider, workDir)
+			configDir := sandboxConfigDir(workDir, agent.Name)
+			rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
+				ID:        agent.ID,
+				ConfigDir: configDir,
+				Config:    cfg,
+			})
+			if sbxErr == nil {
+				sbxRuntime = &rt
+			}
+		}
+
+		newID := uuid.NewString()
+		createResult, err := ca.Create(codeagent.CreateSessionParams{
+			ID:      newID,
+			Name:    agent.Name,
+			Model:   model,
+			WorkDir: string(agent.WorkspaceDir),
+			RunTime: sbxRuntime,
+		})
+		if err != nil {
+			return fmt.Errorf("operator: switch provider: create session for agent %q: %w", agent.ID, err)
+		}
+		if createResult != nil && createResult.ID != "" {
+			newID = createResult.ID
+		}
+		target = &omniagent.CodeSession{
+			Id:       newID,
+			Model:    &codeagent.Model{Provider: params.Provider, Model: model},
+			IsActive: true,
+		}
+		if err := o.sessionStore.CreateSession(agent.ID, target); err != nil {
+			return fmt.Errorf("operator: switch provider: persist new session: %w", err)
+		}
+	}
+
+	for _, s := range sessions {
+		if s == nil || s.Id == "" || s.Id == target.Id {
+			continue
+		}
+		if s.IsActive {
+			s.IsActive = false
+			if err := o.sessionStore.UpdateSession(agent.ID, s); err != nil {
+				return fmt.Errorf("operator: switch provider: deactivate session %q: %w", s.Id, err)
+			}
+		}
+	}
+	target.IsActive = true
+	if err := o.sessionStore.UpdateSession(agent.ID, target); err != nil {
+		return fmt.Errorf("operator: switch provider: activate session %q: %w", target.Id, err)
+	}
+
+	model := operator.DefaultModel
+	if target.Model != nil && target.Model.Model != "" {
+		model = target.Model.Model
+	}
+	ca, err := factory(params.Provider, string(agent.WorkspaceDir), model)
+	if err != nil {
+		return fmt.Errorf("operator: switch provider: init runtime for resume: %w", err)
+	}
+	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: target.Id}); err != nil {
+		return fmt.Errorf("operator: switch provider: resume session %q: %w", target.Id, err)
+	}
+	return nil
 }
 
 // ResumeAgent implements [Operator].
@@ -78,6 +184,17 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 		}
 	}
 	if agent == nil {
+		if params.InitIfMissing {
+			logger.Info("ResumeAgent: agent missing, creating because init-if-missing is enabled", "workspace", workspace, "name", name)
+			return o.CreateAgent(operator.CreateAgentParams{
+				Workspace:      workspace,
+				Name:           name,
+				Provider:       params.Provider,
+				Model:          params.Model,
+				Interactive:    true,
+				ResumeIfExists: false,
+			})
+		}
 		logger.Error("ResumeAgent: agent not found", "workspace", workspace, "name", name)
 		return fmt.Errorf("operator: agent %q not found in workspace %q", name, workspace)
 	}
@@ -120,7 +237,7 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 	if o.provisioner != nil {
 		workDir := string(agent.WorkspaceDir)
 		cfg := defaults.SandboxConfig(provider, workDir)
-		configDir := sandboxConfigDir(workDir)
+		configDir := sandboxConfigDir(workDir, agent.Name)
 		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
 			ID:        agent.ID,
 			ConfigDir: configDir,
@@ -135,8 +252,38 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 	}
 
 	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, RunTime: sbxRuntime}); err != nil {
-		logger.Error("ResumeAgent: resume failed", "agentID", agent.ID, "err", err)
-		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
+		if !isSessionNotFoundError(err) {
+			logger.Error("ResumeAgent: resume failed", "agentID", agent.ID, "err", err)
+			return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
+		}
+		logger.Warn("ResumeAgent: no resumable session found, creating a new session", "agentID", agent.ID, "sessionID", sessionID)
+		createResult, createErr := ca.Create(codeagent.CreateSessionParams{
+			ID:      sessionID,
+			Name:    agent.Name,
+			Model:   model,
+			WorkDir: string(agent.WorkspaceDir),
+			RunTime: sbxRuntime,
+		})
+		if createErr != nil {
+			logger.Error("ResumeAgent: fallback create failed", "agentID", agent.ID, "err", createErr)
+			return fmt.Errorf("operator: create session fallback for agent %q: %w", agent.ID, createErr)
+		}
+		if createResult != nil && createResult.ID != "" {
+			sessionID = createResult.ID
+		}
+		if o.sessionStore != nil {
+			if storeErr := o.sessionStore.CreateSession(agent.ID, &omniagent.CodeSession{
+				Id:       sessionID,
+				Model:    &codeagent.Model{Provider: provider, Model: model},
+				IsActive: true,
+			}); storeErr != nil {
+				logger.Warn("ResumeAgent: fallback session store sync failed", "agentID", agent.ID, "sessionID", sessionID, "err", storeErr)
+			}
+		}
+		if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, RunTime: sbxRuntime}); err != nil {
+			logger.Error("ResumeAgent: fallback resume failed", "agentID", agent.ID, "sessionID", sessionID, "err", err)
+			return fmt.Errorf("operator: resume fallback session for agent %q: %w", agent.ID, err)
+		}
 	}
 	logger.Info("ResumeAgent: completed", "agentID", agent.ID, "workspace", workspace, "name", name, "provider", provider, "sessionID", sessionID)
 	return nil
@@ -295,6 +442,26 @@ func (o *DefaultOperator) CreateAgent(params operator.CreateAgentParams) error {
 		return err
 	}
 	logger.Info("CreateAgent: start", "workspace", workspace, "name", params.Name, "provider", params.Provider, "model", params.Model, "interactive", params.Interactive, "memoryEnabled", o.memoryEnabled())
+
+	if params.ResumeIfExists {
+		agentName := sanitizeAgentName(params.Name)
+		if agentName != "" {
+			agents, err := o.store.ListAgentsByDir(workspace)
+			if err != nil {
+				logger.Error("CreateAgent: existing agent lookup failed", "workspace", workspace, "err", err)
+				return fmt.Errorf("operator: list existing agents: %w", err)
+			}
+			for _, existing := range agents {
+				if existing.Name == agentName {
+					logger.Info("CreateAgent: agent already exists, resuming instead of creating", "workspace", workspace, "name", agentName, "agentID", existing.ID)
+					return o.ResumeAgent(operator.ResumeAgentParams{
+						Workspace: workspace,
+						Name:      agentName,
+					})
+				}
+			}
+		}
+	}
 
 	if o.memoryEnabled() && !memoryRootExists(string(workspace)) {
 		logger.Info("CreateAgent: memory root missing, initialising workspace memory", "workspace", workspace)
@@ -540,6 +707,14 @@ func sanitizeAgentName(name string) string {
 	return strings.TrimSpace(name)
 }
 
+func isSessionNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no session") || strings.Contains(msg, "session not found")
+}
+
 func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider codeagent.Provider, model string, interactive bool) error {
 	if provider == "" {
 		provider = codeagent.Provider(operator.DefaultProvider)
@@ -559,13 +734,11 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 	}
 
 	// Provision a sandbox runtime for this session when the provisioner is available.
-	// The sandbox config is scoped to the agent's workspace and persisted under
-	// the workspace GlobalConfigDir so it survives process restarts.
 	var sbxRuntime *sandbox.SandboxRuntime
 	if o.provisioner != nil {
 		workDir := string(agent.WorkspaceDir)
 		cfg := defaults.SandboxConfig(provider, workDir)
-		configDir := sandboxConfigDir(workDir)
+		configDir := sandboxConfigDir(workDir, agent.Name)
 		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
 			ID:        agent.ID,
 			ConfigDir: configDir,
@@ -663,14 +836,13 @@ func (o *DefaultOperator) ensureWorkspaceAndGuideAgent(workspace sandbox.Workspa
 	return nil
 }
 
-// sandboxConfigDir returns the absolute path where sandbox config is persisted
-// for the given workspace. It joins the workspace root with the first entry of
-// omniagent.Config.GlobalConfigDirs so the config survives process restarts.
-func sandboxConfigDir(workspaceDir string) string {
-	if len(omniagent.Config.GlobalConfigDirs) == 0 || workspaceDir == "" {
+// sandboxConfigDir returns the per-agent sandbox config directory:
+// <workspaceDir>/memory/agents/<agentName>/sandbox
+func sandboxConfigDir(workspaceDir, agentName string) string {
+	if workspaceDir == "" || agentName == "" {
 		return ""
 	}
-	return filepath.Join(workspaceDir, omniagent.Config.GlobalConfigDirs[0])
+	return filepath.Join(workspaceDir, operator.MemoryDirName, "agents", agentName, "sandbox")
 }
 
 // GetCodeAgentResolver returns the SettingsResolver for the given provider.

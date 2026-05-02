@@ -12,8 +12,9 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	operator "github.com/Shaik-Sirajuddin/memory/operator"
-	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"github.com/Shaik-Sirajuddin/memory/store/codesession"
+	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -40,6 +41,18 @@ CREATE TABLE IF NOT EXISTS workspaces (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
     workspace_dir TEXT NOT NULL UNIQUE
+);`
+
+const testCodeSessionSchema = `
+CREATE TABLE IF NOT EXISTS code_sessions (
+    id               TEXT PRIMARY KEY,
+    agent_id         TEXT NOT NULL,
+    model_provider   TEXT NOT NULL DEFAULT '',
+    model_name       TEXT NOT NULL DEFAULT '',
+    idx              INTEGER NOT NULL DEFAULT 0,
+    is_active        INTEGER NOT NULL DEFAULT 0,
+    prompts          INTEGER NOT NULL DEFAULT 0,
+    last_sync_prompt INTEGER NOT NULL DEFAULT 0
 );`
 
 func TestStoreSchemaIncludesRequiredTables(t *testing.T) {
@@ -234,6 +247,33 @@ func TestCreateAgent(t *testing.T) {
 		require.NotEmpty(t, result.Agents, "Agent should be persisted despite session failure")
 		assert.Equal(t, "operator-fail", result.Agents[0].Name, "Persisted agent name should match")
 	})
+
+	t.Run("ResumeIfExistsResumesInsteadOfCreatingDuplicate", func(t *testing.T) {
+		op := newTestOperator(t, true)
+		workspace := sandbox.WorkspaceDir(t.TempDir())
+		require.NoError(t, op.CreateAgent(operator.CreateAgentParams{
+			Workspace:   workspace,
+			Name:        "operator-resume-existing",
+			Interactive: false,
+		}), "Initial create should succeed before resume-if-exists flow")
+
+		resumed := &stubCodeAgent{}
+		op.newCodeAgent = func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+			return resumed, nil
+		}
+
+		require.NoError(t, op.CreateAgent(operator.CreateAgentParams{
+			Workspace:      workspace,
+			Name:           "operator-resume-existing",
+			ResumeIfExists: true,
+			Interactive:    true,
+		}), "CreateAgent with resume-if-exists should resume an existing agent")
+
+		agents, err := op.store.ListAgentsByDir(workspace)
+		require.NoError(t, err, "Existing agent lookup should succeed")
+		assert.Len(t, agents, 1, "Resume-if-exists should not create duplicate agent rows")
+		require.Len(t, resumed.resumeCalls, 1, "Resume-if-exists should invoke resume exactly once")
+	})
 }
 
 func TestTeamInit(t *testing.T) {
@@ -342,17 +382,158 @@ func TestResumeAgent(t *testing.T) {
 		err := op.ResumeAgent(operator.ResumeAgentParams{})
 		require.EqualError(t, err, "operator: agent name is required", "ResumeAgent should require an agent name")
 	})
+
+	t.Run("FallsBackToCreateWhenResumeSessionMissing", func(t *testing.T) {
+		op := newTestOperator(t, true)
+		createRuntime := &stubCodeAgent{}
+		resumeRuntime := &stubCodeAgent{
+			resumeErrs: []error{
+				errors.New("no session found"),
+				nil,
+			},
+		}
+		calls := 0
+		op.newCodeAgent = func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+			calls++
+			if calls == 1 {
+				return createRuntime, nil
+			}
+			return resumeRuntime, nil
+		}
+
+		workspace := sandbox.WorkspaceDir(t.TempDir())
+		require.NoError(t, op.CreateAgent(operator.CreateAgentParams{
+			Workspace:   workspace,
+			Name:        "operator-resume-fallback",
+			Interactive: false,
+		}), "CreateAgent should succeed before resume fallback test")
+
+		err := op.ResumeAgent(operator.ResumeAgentParams{
+			Workspace: workspace,
+			Name:      "operator-resume-fallback",
+		})
+		require.NoError(t, err, "ResumeAgent should fallback to create when runtime reports missing session")
+		require.Len(t, resumeRuntime.createCalls, 1, "ResumeAgent fallback should create a new session when missing")
+		require.Len(t, resumeRuntime.resumeCalls, 2, "ResumeAgent should attempt resume again after fallback create")
+	})
+
+	t.Run("InitIfMissingCreatesAgent", func(t *testing.T) {
+		op := newTestOperator(t, true)
+		workspace := sandbox.WorkspaceDir(t.TempDir())
+
+		err := op.ResumeAgent(operator.ResumeAgentParams{
+			Workspace:     workspace,
+			Name:          "operator-init-missing",
+			InitIfMissing: true,
+		})
+		require.NoError(t, err, "ResumeAgent with init-if-missing should create when agent is missing")
+
+		result, listErr := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: workspace})
+		require.NoError(t, listErr, "ListCodeAgents should succeed after init-if-missing create")
+		require.NotEmpty(t, result.Agents, "Init-if-missing should persist an agent")
+		assert.Equal(t, "operator-init-missing", result.Agents[0].Name, "Init-if-missing should create with the requested name")
+	})
+}
+
+func TestSwitchProvider(t *testing.T) {
+	t.Run("CreatesNewSessionAndActivatesIt", func(t *testing.T) {
+		op := newTestOperator(t, true)
+		createRuntime := &stubCodeAgent{}
+		switchRuntime := &stubCodeAgent{}
+		calls := 0
+		op.newCodeAgent = func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+			calls++
+			if calls == 1 {
+				return createRuntime, nil
+			}
+			return switchRuntime, nil
+		}
+
+		workspace := sandbox.WorkspaceDir(t.TempDir())
+		require.NoError(t, op.CreateAgent(operator.CreateAgentParams{
+			Workspace:   workspace,
+			Name:        "switch-me",
+			Interactive: false,
+		}), "CreateAgent should succeed before switching provider")
+
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: workspace})
+		require.NoError(t, err, "ListCodeAgents should return created agent")
+		require.NotEmpty(t, result.Agents, "Created agent should be listed")
+		agentID := result.Agents[0].ID
+
+		require.NoError(t, op.SwitchProvider(operator.SwitchProviderParams{
+			ID:       agentID,
+			Provider: codeagent.Provider("codex"),
+		}), "SwitchProvider should create and activate a session for the new provider")
+
+		active, err := op.sessionStore.GetSession(agentID)
+		require.NoError(t, err, "Active session lookup should succeed after switch")
+		require.NotNil(t, active.Model, "Active session model should be stored")
+		assert.Equal(t, codeagent.Provider("codex"), active.Model.Provider, "SwitchProvider should set active provider to requested value")
+		require.Len(t, switchRuntime.resumeCalls, 1, "SwitchProvider should resume the target provider session")
+	})
+
+	t.Run("ReusesExistingProviderSessionWhenCleanStartDisabled", func(t *testing.T) {
+		op := newTestOperator(t, true)
+		createRuntime := &stubCodeAgent{}
+		firstSwitchRuntime := &stubCodeAgent{}
+		secondSwitchRuntime := &stubCodeAgent{}
+		calls := 0
+		op.newCodeAgent = func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+			calls++
+			switch calls {
+			case 1:
+				return createRuntime, nil
+			case 2:
+				return firstSwitchRuntime, nil
+			default:
+				return secondSwitchRuntime, nil
+			}
+		}
+
+		workspace := sandbox.WorkspaceDir(t.TempDir())
+		require.NoError(t, op.CreateAgent(operator.CreateAgentParams{
+			Workspace:   workspace,
+			Name:        "switch-reuse",
+			Interactive: false,
+		}), "CreateAgent should succeed before switching provider")
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: workspace})
+		require.NoError(t, err, "ListCodeAgents should return created agent")
+		require.NotEmpty(t, result.Agents, "Created agent should be listed")
+		agentID := result.Agents[0].ID
+
+		require.NoError(t, op.SwitchProvider(operator.SwitchProviderParams{
+			ID:       agentID,
+			Provider: codeagent.Provider("codex"),
+		}), "First switch should create a provider session")
+
+		sessionsBefore, err := op.sessionStore.ListSessions(agentID, nil)
+		require.NoError(t, err, "Session listing should succeed after first switch")
+
+		require.NoError(t, op.SwitchProvider(operator.SwitchProviderParams{
+			ID:         agentID,
+			Provider:   codeagent.Provider("codex"),
+			CleanStart: false,
+		}), "Second switch with clean_start disabled should reuse existing provider session")
+
+		sessionsAfter, err := op.sessionStore.ListSessions(agentID, nil)
+		require.NoError(t, err, "Session listing should succeed after second switch")
+		assert.Len(t, sessionsAfter, len(sessionsBefore), "SwitchProvider should reuse existing provider session when clean start is disabled")
+		assert.Empty(t, secondSwitchRuntime.createCalls, "SwitchProvider should not create a new session when reusing existing provider session")
+	})
 }
 
 func newTestOperator(t *testing.T, memoryEnabled bool) *DefaultOperator {
 	t.Helper()
 
-	store := operatorstore.NewWithDB(newTestDB(t))
+	db := newTestDB(t)
+	store := operatorstore.NewWithDB(db)
 	op := &DefaultOperator{
 		config: config.OmniConfig{
 			Features: &config.Features{Memory: memoryEnabled},
 		},
-		store: store,
+		store:        store,
+		sessionStore: codesession.NewWithDB(db),
 		newCodeAgent: func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
 			return &stubCodeAgent{}, nil
 		},
@@ -379,6 +560,9 @@ func newTestDB(t *testing.T) *sql.DB {
 	_, err = db.Exec(testWorkspaceSchema)
 	require.NoError(t, err, "Creating workspaces table should succeed")
 
+	_, err = db.Exec(testCodeSessionSchema)
+	require.NoError(t, err, "Creating code sessions table should succeed")
+
 	return db
 }
 
@@ -395,6 +579,7 @@ type stubCodeAgent struct {
 	createResultID string
 	createCalls    []codeagent.CreateSessionParams
 	resumeCalls    []codeagent.ResumeSessionParams
+	resumeErrs     []error
 }
 
 func (s *stubCodeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateSessionResult, error) {
@@ -420,6 +605,13 @@ func (s *stubCodeAgent) Stream(codeagent.StreamParams) (*codeagent.StreamResult,
 
 func (s *stubCodeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
 	s.resumeCalls = append(s.resumeCalls, p)
+	if len(s.resumeErrs) > 0 {
+		err := s.resumeErrs[0]
+		s.resumeErrs = s.resumeErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &codeagent.ResumeSessionResult{SessionID: p.ID, ProcessID: "123"}, nil
 }
 
