@@ -18,7 +18,23 @@
       "Bash(git push *)",
       "Bash(grep *)",
       "Bash(gofmt -e /home/siraj/Desktop/ai/memory_tree/cli/omni/operator/impl/default.go)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go test *)",
+      "Bash(git -C /home/siraj/Desktop/ai/memory_tree/cli diff HEAD -- omni/store/)",
+      "Bash(git -C /home/siraj/Desktop/ai/memory_tree/cli status omni/store/ --short)",
+      "Bash(git *)",
+      "Bash(xargs ls *)",
+      "Bash(sed -i '543,548s/.*//' /home/siraj/Desktop/ai/memory_tree/cli/omni/sandbox/provider/gvisor/default.go)",
+      "Bash(sed -i '543i\\\\\\\\tif err := os.WriteFile\\(configPath, templateConfigJSON, 0o644\\); err != nil {\\\\n\\\\t\\\\treturn \"\", fmt.Errorf\\(\"sandbox: write default gvisor spec: %w\", err\\)\\\\n\\\\t}' /home/siraj/Desktop/ai/memory_tree/cli/omni/sandbox/provider/gvisor/default.go)",
+      "Bash(sed -n '60,100p' /home/siraj/Desktop/ai/memory_tree/cli/omni/sandbox/provider/gvisor/config_test.go)",
+      "Bash(sed -n '108,125p' /home/siraj/Desktop/ai/memory_tree/cli/omni/sandbox/provider/gvisor/config_test.go)",
+      "Bash(sed -n '130,145p' /home/siraj/Desktop/ai/memory_tree/cli/omni/sandbox/provider/gvisor/config_test.go)",
+      "Bash(sed -n '340,355p' /home/siraj/Desktop/ai/memory_tree/cli/omni/sandbox/provider/gvisor/config_test.go)",
+      "Skill(update-config)",
+      "Bash(codex login *)",
+      "WebFetch(domain:developers.openai.com)",
+      "Read(memory/*)"
     ]
   }
 }

@@ -1,4 +1,4 @@
 .env
 .claude
 .codex
-agent_*.md
+agent[-_]*.md
