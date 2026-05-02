@@ -103,13 +103,18 @@ func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) e
 			}
 		}
 
-		newID := uuid.NewString()
+		requestedSessionID := strings.TrimSpace(params.SessionID)
+		newID := requestedSessionID
+		if newID == "" {
+			newID = uuid.NewString()
+		}
 		createResult, err := ca.Create(codeagent.CreateSessionParams{
-			ID:      newID,
-			Name:    agent.Name,
-			Model:   model,
-			WorkDir: string(agent.WorkspaceDir),
-			RunTime: sbxRuntime,
+			ID:        newID,
+			Name:      agent.Name,
+			Model:     model,
+			WorkDir:   string(agent.WorkspaceDir),
+			SessionID: requestedSessionID,
+			RunTime:   sbxRuntime,
 		})
 		if err != nil {
 			return fmt.Errorf("operator: switch provider: create session for agent %q: %w", agent.ID, err)
@@ -193,6 +198,7 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 				Model:          params.Model,
 				Interactive:    true,
 				ResumeIfExists: false,
+				SessionID:      params.SessionID,
 			})
 		}
 		logger.Error("ResumeAgent: agent not found", "workspace", workspace, "name", name)
@@ -225,6 +231,10 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 			logger.Debug("ResumeAgent: no persisted session, using defaults", "agentID", agent.ID)
 		}
 	}
+	requestedSessionID := strings.TrimSpace(params.SessionID)
+	if requestedSessionID != "" {
+		sessionID = requestedSessionID
+	}
 
 	ca, err := factory(provider, string(agent.WorkspaceDir), model)
 	if err != nil {
@@ -251,18 +261,19 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 		}
 	}
 
-	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, RunTime: sbxRuntime}); err != nil {
+	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime}); err != nil {
 		if !isSessionNotFoundError(err) {
 			logger.Error("ResumeAgent: resume failed", "agentID", agent.ID, "err", err)
 			return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
 		}
 		logger.Warn("ResumeAgent: no resumable session found, creating a new session", "agentID", agent.ID, "sessionID", sessionID)
 		createResult, createErr := ca.Create(codeagent.CreateSessionParams{
-			ID:      sessionID,
-			Name:    agent.Name,
-			Model:   model,
-			WorkDir: string(agent.WorkspaceDir),
-			RunTime: sbxRuntime,
+			ID:        sessionID,
+			Name:      agent.Name,
+			Model:     model,
+			WorkDir:   string(agent.WorkspaceDir),
+			SessionID: requestedSessionID,
+			RunTime:   sbxRuntime,
 		})
 		if createErr != nil {
 			logger.Error("ResumeAgent: fallback create failed", "agentID", agent.ID, "err", createErr)
@@ -280,7 +291,7 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 				logger.Warn("ResumeAgent: fallback session store sync failed", "agentID", agent.ID, "sessionID", sessionID, "err", storeErr)
 			}
 		}
-		if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, RunTime: sbxRuntime}); err != nil {
+		if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime}); err != nil {
 			logger.Error("ResumeAgent: fallback resume failed", "agentID", agent.ID, "sessionID", sessionID, "err", err)
 			return fmt.Errorf("operator: resume fallback session for agent %q: %w", agent.ID, err)
 		}
@@ -532,7 +543,7 @@ func (o *DefaultOperator) CreateAgent(params operator.CreateAgentParams) error {
 		logger.Info("CreateAgent: memory seeded", "agentID", agentID, "memoryDir", memDir)
 	}
 
-	if err := o.startAgentSession(agent, params.Provider, params.Model, params.Interactive); err != nil {
+	if err := o.startAgentSession(agent, params.Provider, params.Model, params.Interactive, params.SessionID); err != nil {
 		logger.Warn("CreateAgent: session bootstrap failed — agent persisted; use 'omni agent resume' to start session", "agentID", agentID, "provider", params.Provider, "model", params.Model, "err", err)
 	}
 	logger.Info("CreateAgent: completed", "workspaceID", ws.ID, "agentID", agentID)
@@ -715,11 +726,14 @@ func isSessionNotFoundError(err error) bool {
 	return strings.Contains(msg, "no session") || strings.Contains(msg, "session not found")
 }
 
-func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider codeagent.Provider, model string, interactive bool) error {
+func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider codeagent.Provider, model string, interactive bool, requestedSessionID string) error {
 	if provider == "" {
 		provider = codeagent.Provider(operator.DefaultProvider)
 	}
-	if model == "" {
+
+	// Only apply the global default for the default (claude) provider.
+	// Other providers (codex, gemini, …) handle their own defaults inside New().
+	if model == "" && provider == codeagent.Provider(operator.DefaultProvider) {
 		model = operator.DefaultModel
 	}
 
@@ -731,6 +745,14 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 	ca, err := factory(provider, string(agent.WorkspaceDir), model)
 	if err != nil {
 		return fmt.Errorf("operator: init code agent: %w", err)
+	}
+
+	// If model was left empty the factory applied its own default; read it back
+	// so logging and session-store persistence use the real model name.
+	if model == "" {
+		if cfg, cfgErr := ca.GetSessionConfig(codeagent.GetSessionConfigParams{}); cfgErr == nil && cfg.Model.Model != "" {
+			model = cfg.Model.Model
+		}
 	}
 
 	// Provision a sandbox runtime for this session when the provisioner is available.
@@ -752,20 +774,26 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 		}
 	}
 
+	requestedSessionID = strings.TrimSpace(requestedSessionID)
+	createID := agent.ID
+	if requestedSessionID != "" {
+		createID = requestedSessionID
+	}
 	createResult, err := ca.Create(codeagent.CreateSessionParams{
-		ID:      agent.ID,
-		Name:    agent.Name,
-		Model:   model,
-		WorkDir: string(agent.WorkspaceDir),
-		RunTime: sbxRuntime,
+		ID:        createID,
+		Name:      agent.Name,
+		Model:     model,
+		WorkDir:   string(agent.WorkspaceDir),
+		SessionID: requestedSessionID,
+		RunTime:   sbxRuntime,
 	})
 	if err != nil {
 		return fmt.Errorf("operator: create session for agent %q: %w", agent.ID, err)
 	}
 
-	sessionID := createResult.ID
-	if sessionID == "" {
-		sessionID = agent.ID
+	sessionID := createID
+	if createResult != nil && createResult.ID != "" {
+		sessionID = createResult.ID
 	}
 
 	// Persist the session to the code session store.
@@ -781,10 +809,11 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 	logger.Info("startAgentSession: session created", "agentID", agent.ID, "provider", provider, "sessionID", sessionID, "interactive", interactive)
 
 	if !interactive {
+		logger.Info("startAgentSession: interactive session is not attached", "agentID", agent.ID, "provider", provider, "sessionID", sessionID)
 		return nil
 	}
 
-	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID}); err != nil {
+	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID}); err != nil {
 		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
 	}
 	logger.Info("startAgentSession: interactive session resumed", "agentID", agent.ID, "provider", provider, "sessionID", sessionID)
