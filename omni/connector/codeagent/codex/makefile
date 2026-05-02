@@ -11,7 +11,7 @@ GO_JSONSCHEMA := go-jsonschema
 # Targets
 # =========================
 
-.PHONY: generate-schema
+.PHONY: gen-structs-from-schema
 gen-structs-from-schema:
 	$(GO_JSONSCHEMA) \
 		-p $(PACKAGE_NAME) \

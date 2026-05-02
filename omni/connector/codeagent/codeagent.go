@@ -83,6 +83,17 @@ type ConfigPaths struct {
 	Binary              []string
 }
 
+type ModelID string
+
+type ModelInfo struct {
+	ID        string
+	Reasoning string
+}
+
+type DiscoverResult struct {
+	Models []ModelID
+}
+
 // CodeAgent implements Model
 // CodeAgent Provides access to sessions
 // All operations of CodeAgent are concurrent safe
@@ -114,6 +125,10 @@ type CodeAgent interface {
 	GetUserIdentity() UserIdentify
 	// Stop terminates the active interactive session.
 	Stop()
+
+	// Discover returns available models 
+	// else returns default model
+	Discover() (DiscoverResult, error)
 }
 
 // TODO : all codeagent should accept a *sandbox.Config in new

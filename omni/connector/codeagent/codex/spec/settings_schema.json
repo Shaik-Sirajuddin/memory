@@ -32,9 +32,6 @@
       "type": "object"
     },
     "AgentsToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/AgentRoleToml"
-      },
       "properties": {
         "job_max_runtime_seconds": {
           "description": "Default maximum runtime in seconds for agent job workers.",
@@ -58,7 +55,7 @@
       "type": "object"
     },
     "AltScreenMode": {
-      "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n**Background:** The alternate screen buffer provides a cleaner fullscreen experience without polluting the terminal's scrollback history. However, it conflicts with terminal multiplexers like Zellij that strictly follow the xterm specification, which defines that alternate screen buffers should not have scrollback.\n\n**Zellij's behavior:** Zellij intentionally disables scrollback in alternate screen mode (see https://github.com/zellij-org/zellij/pull/1032) to comply with the xterm spec. This is by design and not configurable in Zellij—there is no option to enable scrollback in alternate screen mode.\n\n**Solution:** This setting provides a pragmatic workaround: - `auto` (default): Automatically detect the terminal multiplexer. If running in Zellij, disable alternate screen to preserve scrollback. Enable it everywhere else. - `always`: Always use alternate screen mode (original behavior before this fix). - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback in all multiplexers.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
+      "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n**Background:** The alternate screen buffer provides a cleaner fullscreen experience without polluting the terminal's scrollback history. However, it conflicts with terminal multiplexers like Zellij that strictly follow the xterm specification, which defines that alternate screen buffers should not have scrollback.\n\n**Zellij's behavior:** Zellij intentionally disables scrollback in alternate screen mode (see https://github.com/zellij-org/zellij/pull/1032) to comply with the xterm spec. This is by design and not configurable in Zellij\u2014there is no option to enable scrollback in alternate screen mode.\n\n**Solution:** This setting provides a pragmatic workaround: - `auto` (default): Automatically detect the terminal multiplexer. If running in Zellij, disable alternate screen to preserve scrollback. Enable it everywhere else. - `always`: Always use alternate screen mode (original behavior before this fix). - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback in all multiplexers.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
       "oneOf": [
         {
           "description": "Auto-detect: disable alternate screen in Zellij, enable elsewhere.",
@@ -217,14 +214,14 @@
       "description": "Determines the conditions under which the user is consulted to approve running the command proposed by Codex.",
       "oneOf": [
         {
-          "description": "Under this policy, only \"known safe\" commands—as determined by `is_safe_command()`—that **only read files** are auto‑approved. Everything else will ask the user to approve.",
+          "description": "Under this policy, only \"known safe\" commands\u2014as determined by `is_safe_command()`\u2014that **only read files** are auto\u2011approved. Everything else will ask the user to approve.",
           "enum": [
             "untrusted"
           ],
           "type": "string"
         },
         {
-          "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
+          "description": "DEPRECATED: *All* commands are auto\u2011approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
           "enum": [
             "on-failure"
           ],
@@ -2552,15 +2549,7 @@
         {
           "$ref": "#/definitions/ShellEnvironmentPolicyToml"
         }
-      ],
-      "default": {
-        "exclude": null,
-        "experimental_use_profile": null,
-        "ignore_default_excludes": null,
-        "include_only": null,
-        "inherit": null,
-        "set": null
-      }
+      ]
     },
     "show_raw_agent_reasoning": {
       "description": "When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output. Defaults to `false`.",

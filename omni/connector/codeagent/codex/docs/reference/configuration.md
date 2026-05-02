@@ -2,12 +2,12 @@
 
 ## Authentication
 
-Authentication is verified by running `codex auth status`. Exit code 0 means logged in. The connector never reads API keys or credential files directly.
+Authentication is verified by running `codex login status`. Exit code 0 means logged in. The connector never reads API keys or credential files directly.
 
 | How to authenticate | Command |
 |---|---|
-| Interactive login | `codex auth login` in a terminal |
-| Check status | `codex auth status` |
+| Interactive login | `codex login` in a terminal |
+| Check status | `codex login status` |
 
 ---
 
@@ -15,8 +15,8 @@ Authentication is verified by running `codex auth status`. Exit code 0 means log
 
 | Scope | Path | Managed by |
 |---|---|---|
-| User (global defaults) | `~/.codex/config.yaml` | `Defaults`, `UpdateDefaults`, `SaveDefaultSettings` |
-| Workspace | `<workDir>/.codex/config.yaml` | `Create` (model sync), `UpdateSessionSandbox` |
+| User (global defaults) | `~/.codex/config.toml` | `Defaults`, `UpdateDefaults`, `SaveDefaultSettings` |
+| Workspace | `<workDir>/.codex/config.toml` | `Create` (model sync), `UpdateSessionSandbox` |
 
 ### Keys written by the connector
 
@@ -29,7 +29,7 @@ All writes merge with existing file content — unrelated keys are always preser
 
 ### Reading defaults (first-resolved order)
 
-When `Defaults` is called, settings are sourced from `~/.codex/config.yaml`. If the file is missing or a key is absent, the in-memory value set at construction is used as the fallback.
+When `Defaults` is called, settings are sourced from `~/.codex/config.toml`. If the file is missing or a key is absent, the in-memory value set at construction is used as the fallback.
 
 ---
 
@@ -39,10 +39,10 @@ The `SettingsResolver` provides structured access to config file state beyond th
 
 | Method | What it does |
 |---|---|
-| Get User Settings | Reads `~/.codex/config.yaml` and returns model and sandbox as typed values |
-| Get Workspace Settings | Reads `<workspaceDir>/.codex/config.yaml` for the given workspace |
-| Save Default Settings | Merges the given settings into `~/.codex/config.yaml`, preserving other keys |
-| Watch Default Settings | Polls `~/.codex/config.yaml` every second; calls your callback when the file changes |
+| Get User Settings | Reads `~/.codex/config.toml` and returns model and sandbox as typed values |
+| Get Workspace Settings | Reads `<workspaceDir>/.codex/config.toml` for the given workspace |
+| Save Default Settings | Merges the given settings into `~/.codex/config.toml`, preserving other keys |
+| Watch Default Settings | Polls `~/.codex/config.toml` every second; calls your callback when the file changes |
 
 The watcher runs in a background goroutine. Starting a second watch automatically stops the previous one.
 

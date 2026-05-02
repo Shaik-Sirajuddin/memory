@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	connlog "github.com/Shaik-Sirajuddin/memory/connector/codeagent/log"
+	rootsandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
@@ -72,6 +74,7 @@ type codexAgent struct {
 	sessionID       string
 	activeCmd       *exec.Cmd
 	sbx             *sandbox.Config
+	sbxRuntime      sandbox.SandboxRuntime
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
 	resolver        *settings.Resolver
@@ -123,15 +126,17 @@ func (a *codexAgent) GetUserIdentity() codeagent.UserIdentify {
 	workDir := a.workDir
 	a.mu.RUnlock()
 
-	cmd := exec.Command("codex", "auth", "status")
+	cmd := exec.Command("codex", "login", "status")
 	cmd.Dir = workDir
-	if err := cmd.Run(); err != nil {
+	out, err := cmd.Output()
+	if err != nil {
 		logger.Debug("GetUserIdentity: not authenticated", "err", err)
 		return codeagent.UserIdentify{Authenticated: false}
 	}
 
-	logger.Debug("GetUserIdentity: authenticated via codex auth status")
-	return codeagent.UserIdentify{Authenticated: true}
+	displayName := strings.TrimSpace(string(out))
+	logger.Debug("GetUserIdentity: authenticated", "status", displayName)
+	return codeagent.UserIdentify{Authenticated: true, DisplayName: displayName}
 }
 
 // ============================================================
@@ -528,4 +533,44 @@ func (a *codexAgent) Discover() (codeagent.DiscoverResult, error) {
 		out = append(out, codeagent.ModelID(m))
 	}
 	return codeagent.DiscoverResult{Models: out}, nil
+}
+
+func (a *codexAgent) syncSandboxRuntimeLocked() error {
+	if a.sbx == nil {
+		a.sbxRuntime = nil
+		return nil
+	}
+
+	if a.sbxRuntime != nil {
+		return a.sbxRuntime.Sync(a.sbx)
+	}
+
+	supported := rootsandbox.SupportedProvisioners(runtime.GOOS)
+	if len(supported) == 0 {
+		return fmt.Errorf("codex: sandbox runtime: no supported provisioner for %s", runtime.GOOS)
+	}
+
+	provisioner, err := rootsandbox.NewProvisioner(supported[0], &sandbox.Sandbox{
+		Config: a.sbx,
+	}, rootsandbox.ProvisionerOptions{
+		WorkDir: a.workDir,
+	})
+	if err != nil {
+		return fmt.Errorf("codex: sandbox runtime: create provisioner: %w", err)
+	}
+
+	id := a.sessionID
+	if strings.TrimSpace(id) == "" {
+		id = "codex-sandbox-" + generateID()
+	}
+	rt, err := provisioner.Create(rootsandbox.CreateSandboxParams{
+		ID:     id,
+		Config: a.sbx,
+	})
+	if err != nil {
+		return fmt.Errorf("codex: sandbox runtime: create runtime: %w", err)
+	}
+
+	a.sbxRuntime = rt
+	return nil
 }

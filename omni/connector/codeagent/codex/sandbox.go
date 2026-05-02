@@ -36,6 +36,11 @@ func (a *codexAgent) GetSessionSandbox(_ codeagent.GetSessionSandboxParams) (*co
 func (a *codexAgent) UpdateSessionSandbox(p codeagent.UpdateSessionSandboxParams) (*codeagent.UpdateSessionSandboxResult, error) {
 	a.mu.Lock()
 	a.sbx = p.Sandbox
+	if err := a.syncSandboxRuntimeLocked(); err != nil {
+		a.mu.Unlock()
+		logger.Error("UpdateSessionSandbox: runtime sync failed", "err", err)
+		return nil, fmt.Errorf("codex: update sandbox: sync runtime: %w", err)
+	}
 	a.mu.Unlock()
 
 	if err := a.syncSandboxConfig(); err != nil {

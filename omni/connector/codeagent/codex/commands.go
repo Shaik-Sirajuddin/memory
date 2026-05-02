@@ -45,6 +45,9 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 		id = generateID()
 	}
 	a.sessionID = id
+	if p.RunTime != nil {
+		a.sbxRuntime = *p.RunTime
+	}
 	workDir := a.workDir
 	model := a.model
 	a.mu.Unlock()
@@ -56,12 +59,12 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 	}
 	logger.Debug("Create: codex binary ok", "version", trimSpace(out))
 
-	// Verify authentication via `codex auth status` (exit 0 = authenticated).
-	authCmd := exec.Command(binPath, "auth", "status")
+	// Verify authentication via `codex login status` (exit 0 = authenticated).
+	authCmd := exec.Command(binPath, "login", "status")
 	authCmd.Dir = workDir
 	if err := authCmd.Run(); err != nil {
 		logger.Warn("Create: user not authenticated", "err", err)
-		return nil, fmt.Errorf("codex: create: not authenticated — run 'codex auth login' first")
+		return nil, fmt.Errorf("codex: create: not authenticated — run 'codex login' first")
 	}
 
 	// Persist model into .codex/config.toml so interactive sessions inherit it.
@@ -78,7 +81,11 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 	a.mu.RLock()
 	binPath := a.binPath
 	workDir := a.workDir
+	rt := a.sbxRuntime
 	a.mu.RUnlock()
+	if p.RunTime != nil {
+		rt = *p.RunTime
+	}
 
 	cmdName := "resume"
 	if p.ForkSession {
@@ -90,6 +97,19 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 		args = append(args, p.ID)
 	} else {
 		args = append(args, "--last")
+	}
+
+	if rt != nil {
+		if err := rt.Command(binPath, args); err != nil {
+			return nil, fmt.Errorf("codex: resume: sandbox command: %w", err)
+		}
+		pid := runtimePID(rt)
+		resolvedSessionID := p.ID
+		if resolvedSessionID == "" {
+			resolvedSessionID = "last"
+		}
+		logger.Info("Resume: interactive sandbox session completed", "pid", pid, "sessionID", resolvedSessionID, "fork", p.ForkSession)
+		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
 	}
 
 	cmd := exec.Command(binPath, args...)
@@ -231,17 +251,15 @@ func (a *codexAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult, 
 	workDir := a.workDir
 	model := a.model
 	sbx := a.sbx
+	rt := a.sbxRuntime
 	a.mu.RUnlock()
 
 	args := buildExecArgs(p.Prompt, model, p.OutputFormat, p.MaxTurns, sbx)
 	logger.Debug("Exec", "workDir", workDir, "args", args)
 
-	cmd := exec.Command(binPath, args...)
-	cmd.Dir = workDir
-
-	out, err := cmd.Output()
+	out, err := execOutput(workDir, rt, binPath, args...)
 	if err != nil {
-		return nil, wrapExitError("codex exec", err)
+		return nil, err
 	}
 
 	response := strings.TrimSpace(string(out))
@@ -264,10 +282,44 @@ func (a *codexAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult, 
 	workDir := a.workDir
 	model := a.model
 	sbx := a.sbx
+	rt := a.sbxRuntime
 	a.mu.RUnlock()
 
 	args := buildStreamArgs(p.Prompt, model, p.MaxTurns, sbx)
 	logger.Debug("Stream", "workDir", workDir, "args", args)
+
+	ch := make(chan codeagent.StreamEvent, 32)
+	if rt != nil {
+		proc, err := rt.Start(binPath, args)
+		if err != nil {
+			return nil, fmt.Errorf("codex stream: sandbox start: %w", err)
+		}
+		go func() {
+			defer close(ch)
+			res, waitErr := proc.Wait()
+			if waitErr != nil {
+				msg := runtimeErrorf("codex stream", res, waitErr).Error()
+				logger.Error("Stream: sandbox process exited with error", "err", msg)
+				ch <- codeagent.StreamEvent{Type: "stop", Done: true, Content: msg}
+				return
+			}
+			scanner := bufio.NewScanner(strings.NewReader(res.Stdout))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "" {
+					continue
+				}
+				ev := parseCodexLine(line)
+				ch <- ev
+				if ev.Done {
+					return
+				}
+			}
+			ch <- codeagent.StreamEvent{Type: "stop", Done: true}
+			logger.Debug("Stream completed via sandbox runtime")
+		}()
+		return &codeagent.StreamResult{Events: ch}, nil
+	}
 
 	cmd := exec.Command(binPath, args...)
 	cmd.Dir = workDir
@@ -279,8 +331,6 @@ func (a *codexAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult, 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("codex stream: start process: %w", err)
 	}
-
-	ch := make(chan codeagent.StreamEvent, 32)
 
 	go func() {
 		defer close(ch)
@@ -355,6 +405,41 @@ func captureOutput(dir, name string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+func execOutput(workDir string, rt sandbox.SandboxRuntime, name string, args ...string) (string, error) {
+	if rt == nil {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = workDir
+		out, err := cmd.Output()
+		if err != nil {
+			return "", wrapExitError("codex exec", err)
+		}
+		return string(out), nil
+	}
+	res, err := rt.Capture(name, args)
+	if err != nil {
+		return "", runtimeErrorf("codex exec", res, err)
+	}
+	return res.Stdout, nil
+}
+
+func runtimeErrorf(op string, res *sandbox.ExecutionResult, err error) error {
+	if res != nil {
+		stderr := strings.TrimSpace(res.Stderr)
+		if stderr == "" {
+			stderr = strings.TrimSpace(res.Stdout)
+		}
+		return fmt.Errorf("%s: exit %d: %s", op, res.ExitCode, stderr)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+func runtimePID(rt sandbox.SandboxRuntime) string {
+	if rt == nil || rt.Sandbox() == nil || rt.Sandbox().State == nil {
+		return ""
+	}
+	return rt.Sandbox().State.PID
 }
 
 func trimSpace(s string) string {

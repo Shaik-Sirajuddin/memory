@@ -203,6 +203,18 @@ func lookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
 
+// resolveBinary tries each candidate name/path in order and returns the first
+// one that resolves via exec.LookPath. This allows ConfigPaths.Binary to list
+// multiple fallback names (e.g. "codex", "/usr/local/bin/codex").
+func resolveBinary(candidates []string) (string, error) {
+	for _, c := range candidates {
+		if p, err := exec.LookPath(c); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("none of %v found in PATH", candidates)
+}
+
 // parseJSONStringSlice decodes a JSON array of strings (e.g. ["m1","m2"]) into a string slice.
 // Returns nil if decoding fails.
 func parseJSONStringSlice(raw string) []string {
