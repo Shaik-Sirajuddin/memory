@@ -74,7 +74,7 @@ func (p *Provisioner) Create(params provider.CreateSandboxParams) (provider.Sand
 		logger.Error("runtime config sync failed", "id", params.ID, "err", err)
 		return nil, err
 	}
-	if err := p.ensureRuntimeCreated(params.ID); err != nil {
+	if err := p.ensureRuntimeCreated(params.ID, params.ConfigDir); err != nil {
 		logger.Error("runtime create failed", "id", params.ID, "err", err)
 		return nil, err
 	}
@@ -336,8 +336,8 @@ func (p *Provisioner) resolveDir(path string) (string, error) {
 	return filepath.Join(filepath.Clean(workDir), path), nil
 }
 
-func (p *Provisioner) ensureRuntimeCreated(id string) error {
-	bundle, err := p.resolveBundlePath(id)
+func (p *Provisioner) ensureRuntimeCreated(id, configDir string) error {
+	bundle, err := p.resolveBundle(id, configDir)
 	if err != nil {
 		return err
 	}
@@ -519,16 +519,25 @@ func writeArtifactFile(base string, relativePath string, content []byte) error {
 	return nil
 }
 
-func (p *Provisioner) resolveBundlePath(id string) (string, error) {
+// resolveBundle returns the OCI bundle directory for the given sandbox.
+// Priority: user-managed WorkDir bundle → configDir/gen → XDG default.
+func (p *Provisioner) resolveBundle(id, configDir string) (string, error) {
+	if err := validateSandboxID(id); err != nil {
+		return "", err
+	}
 	if bundle, ok := p.bundlePath(); ok {
 		return bundle, nil
 	}
-	return p.ensureDefaultBundle(id)
+	if strings.TrimSpace(configDir) != "" {
+		return p.ensureBundleAt(filepath.Join(strings.TrimSpace(configDir), "gen"))
+	}
+	return p.ensureXDGBundle(id)
 }
+
 func (p *Provisioner) resolveSyncOptions(id, configDir string) (ConfigSyncOptions, error) {
 	bundleDir := ""
-	if _, ok := p.bundlePath(); !ok {
-		resolved, err := p.resolveBundlePath(id)
+	if _, userManaged := p.bundlePath(); !userManaged {
+		resolved, err := p.resolveBundle(id, configDir)
 		if err != nil {
 			return ConfigSyncOptions{}, err
 		}
@@ -542,7 +551,25 @@ func (p *Provisioner) resolveSyncOptions(id, configDir string) (ConfigSyncOption
 	}, nil
 }
 
-func (p *Provisioner) ensureDefaultBundle(id string) (string, error) {
+// ensureBundleAt creates the OCI bundle layout (dir + rootfs/ + template config.json) at bundleDir.
+func (p *Provisioner) ensureBundleAt(bundleDir string) (string, error) {
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		return "", fmt.Errorf("sandbox: create bundle dir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bundleDir, gvisorBundleRootFSDirName), 0o755); err != nil {
+		return "", fmt.Errorf("sandbox: create bundle rootfs: %w", err)
+	}
+	configPath := filepath.Join(bundleDir, gvisorBundleConfigFileName)
+	if _, err := os.Stat(configPath); err != nil {
+		if err := os.WriteFile(configPath, templateConfigJSON, 0o644); err != nil {
+			return "", fmt.Errorf("sandbox: write bundle template config: %w", err)
+		}
+	}
+	return bundleDir, nil
+}
+
+// ensureXDGBundle provisions the default bundle under the XDG data directory.
+func (p *Provisioner) ensureXDGBundle(id string) (string, error) {
 	if strings.TrimSpace(id) == "" {
 		return "", fmt.Errorf("sandbox: id is required")
 	}
@@ -550,19 +577,9 @@ func (p *Provisioner) ensureDefaultBundle(id string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sandbox: resolve default gvisor bundle dir: %w", err)
 	}
-	bundleDir := filepath.Dir(path)
-	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
-		return "", fmt.Errorf("sandbox: create default gvisor bundle dir: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Join(bundleDir, gvisorBundleRootFSDirName), 0o755); err != nil {
-		return "", fmt.Errorf("sandbox: create default gvisor rootfs dir: %w", err)
-	}
-	configPath := filepath.Join(bundleDir, gvisorBundleConfigFileName)
-	if _, err := os.Stat(configPath); err == nil {
-		return bundleDir, nil
-	}
-	if err := os.WriteFile(configPath, templateConfigJSON, 0o644); err != nil {
-		return "", fmt.Errorf("sandbox: write default gvisor spec: %w", err)
+	bundleDir, err := p.ensureBundleAt(filepath.Dir(path))
+	if err != nil {
+		return "", err
 	}
 	logger.Info("default gvisor bundle created", "id", id, "bundle", bundleDir)
 	return bundleDir, nil

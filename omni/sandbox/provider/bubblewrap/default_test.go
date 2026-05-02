@@ -8,6 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var _ provider.SandboxProvisioner = (*Provisioner)(nil)
+var _ provider.SandboxUpdateProvisioner = (*Provisioner)(nil)
+var _ provider.SandboxDirProvisioner = (*Provisioner)(nil)
+var _ provider.SandboxRuntime = (*Runtime)(nil)
+
 func TestProvisionerBuildCommand(t *testing.T) {
 	t.Run("WriteEnabledWorkspace", func(t *testing.T) {
 		p, err := New(&provider.Sandbox{

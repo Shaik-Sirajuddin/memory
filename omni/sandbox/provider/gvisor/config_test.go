@@ -366,8 +366,8 @@ func TestEnsureDefaultBundleUsesTemplate(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		bundleDir, err := p.ensureDefaultBundle("default-bundle-tpl-1")
-		require.NoError(t, err, "ensureDefaultBundle should not return an error")
+		bundleDir, err := p.ensureXDGBundle("default-bundle-tpl-1")
+		require.NoError(t, err, "ensureXDGBundle should not return an error")
 
 		configPath := filepath.Join(bundleDir, gvisorBundleConfigFileName)
 		raw, err := os.ReadFile(configPath)

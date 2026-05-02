@@ -29,6 +29,11 @@ gVisor runtime creation expects `ProvisionerOptions.WorkDir` to point to an OCI 
 
 Use `WorkDir=/home/user/sandboxes/demo` when you want explicit bundle control.
 
+Reference templates:
+
+- `sandbox/provider/gvisor/template/config.json`
+- `sandbox/provider/gvisor/template/oci-bundle-layout.txt`
+
 ## Quick Setup
 
 1. Create bundle dirs: `mkdir -p <bundle-dir>/rootfs`

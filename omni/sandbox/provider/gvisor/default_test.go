@@ -205,9 +205,9 @@ func TestResolveBundlePath(t *testing.T) {
 		p, err := New(nil, provider.ProvisionerOptions{WorkDir: workDir})
 		require.NoError(t, err, "Creating gVisor provisioner should not return an error")
 
-		bundle, err := p.resolveBundlePath("sandbox-bundle-1")
-		require.NoError(t, err, "resolveBundlePath should return configured WorkDir bundle when config exists")
-		assert.Equal(t, filepath.Clean(workDir), bundle, "resolveBundlePath should use configured WorkDir bundle path")
+		bundle, err := p.resolveBundle("sandbox-bundle-1", "")
+		require.NoError(t, err, "resolveBundle should return configured WorkDir bundle when config exists")
+		assert.Equal(t, filepath.Clean(workDir), bundle, "resolveBundle should use configured WorkDir bundle path")
 	})
 
 	t.Run("CreatesDefaultBundleWhenWorkDirIsNotBundle", func(t *testing.T) {
@@ -216,8 +216,8 @@ func TestResolveBundlePath(t *testing.T) {
 		require.NoError(t, err, "Creating gVisor provisioner should not return an error")
 
 		id := fmt.Sprintf("sandbox-bundle-%d", time.Now().UnixNano())
-		bundle, err := p.resolveBundlePath(id)
-		require.NoError(t, err, "resolveBundlePath should create default bundle when WorkDir is not an OCI bundle")
+		bundle, err := p.resolveBundle(id, "")
+		require.NoError(t, err, "resolveBundle should create default bundle when WorkDir is not an OCI bundle")
 		require.FileExists(t, filepath.Join(bundle, "config.json"), "resolveBundlePath should create config.json in default bundle")
 
 		raw, err := os.ReadFile(filepath.Join(bundle, "config.json"))
@@ -314,8 +314,8 @@ func TestSyncBundleConfig(t *testing.T) {
 		}, syncOpts)
 		require.NoError(t, err, "SyncBundleConfig should write generated config for managed bundle")
 
-		bundle, err := p.resolveBundlePath("sandbox-sync-config-1")
-		require.NoError(t, err, "resolveBundlePath should resolve managed bundle path")
+		bundle, err := p.resolveBundle("sandbox-sync-config-1", "")
+		require.NoError(t, err, "resolveBundle should resolve managed bundle path")
 
 		raw, err := os.ReadFile(filepath.Join(bundle, "config.json"))
 		require.NoError(t, err, "Test should read synced bundle config")

@@ -10,7 +10,7 @@
 ### Interfaces
 - `provider/types.go` — `SandboxRuntime`, `SandboxProcess`, `SandboxProvisioner`, `SandboxUpdateProvisioner`, `SandboxDirProvisioner`, `SandboxConfigParser`, `Store`
 - `sandbox.go` — `ConfigParser`
-- `provider/gvisor/default.go` — `ConigTransformer`
+- `provider/gvisor/default.go` — `ConfigTransformer`
 - `store/store.go` — `SandboxStore`
 
 ### Factory Functions

@@ -144,9 +144,6 @@ type SandboxConfigParser interface {
 	Parse(config *Config) (*ParsedSandboxConfig, error)
 }
 
-
-
-
 type ConfigFileParser interface {
 	Load(filePath string) (*Config, error)
 	Validate(config *Config) error

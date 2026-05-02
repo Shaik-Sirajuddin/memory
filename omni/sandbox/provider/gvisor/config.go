@@ -102,12 +102,10 @@ func (t *defaultConfigTransformer) SyncBundleConfig(id string, config *provider.
 		// User-managed bundle: config.json must not be overwritten.
 		return nil
 	}
-	configPath := filepath.Join(opts.BundleDir, gvisorBundleConfigFileName)
-	if _, statErr := os.Stat(configPath); statErr != nil {
-		if err := os.WriteFile(configPath, templateConfigJSON, 0o644); err != nil {
-			return fmt.Errorf("sandbox: write gvisor bundle template base: %w", err)
-		}
+	if err := os.MkdirAll(filepath.Join(opts.BundleDir, gvisorBundleRootFSDirName), 0o755); err != nil {
+		return fmt.Errorf("sandbox: create bundle rootfs dir: %w", err)
 	}
+	configPath := filepath.Join(opts.BundleDir, gvisorBundleConfigFileName)
 	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
 		return fmt.Errorf("sandbox: write gvisor spec: %w", err)
 	}
