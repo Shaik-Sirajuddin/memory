@@ -17,6 +17,27 @@ const (
 	Claude codeagent.Provider = "claude"
 )
 
+// PTY bracketed-paste and submit constants for ExecInSession.
+const (
+	submitKey  = "\x1b[13;2u" // CSI-u Shift+Enter
+	ctrlU      = "\x15"
+	pasteStart = "\x1b[200~"
+	pasteEnd   = "\x1b[201~"
+)
+
+// PTYClient is the minimal PTY daemon interface used by ExecInSession.
+type PTYClient interface {
+	Pipe(agentID, sessionID string, data []byte) error
+	List() ([]PTYInfo, error)
+}
+
+// PTYInfo describes a single active terminal returned by PTYClient.List.
+type PTYInfo struct {
+	AgentID   string
+	SessionID string
+	Status    string
+}
+
 // interactiveStdin/Stdout/Stderr are the I/O streams used by Resume.
 // They are package-level vars so tests can substitute non-TTY writers.
 var (
@@ -191,6 +212,49 @@ func (a *claudeAgent) Delete(_ codeagent.DeleteSessionParams) (*codeagent.Delete
 
 func (a *claudeAgent) Stop() {
 	logger.Info("Stop: no-op for non-interactive claude sessions")
+}
+
+// ============================================================
+// ExecInSession
+// ============================================================
+
+// ExecInSession sends a prompt into an active interactive PTY session.
+// It is fire-and-forget: the prompt is piped into the PTY stdin and the call
+// returns immediately without waiting for a response.
+func (a *claudeAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
+	a.mu.RLock()
+	client := a.ptyClient
+	agentID := a.sessionID
+	a.mu.RUnlock()
+
+	if client == nil {
+		return nil, fmt.Errorf("claude: ExecInSession: no PTY daemon client configured")
+	}
+
+	infos, err := client.List()
+	if err != nil {
+		return nil, fmt.Errorf("claude: ExecInSession: list sessions: %w", err)
+	}
+	active := false
+	for _, info := range infos {
+		if info.SessionID == p.SessionID && info.Status == "active" {
+			active = true
+			break
+		}
+	}
+	if !active {
+		return nil, fmt.Errorf("claude: ExecInSession: session not live")
+	}
+
+	// Bracketed-paste ensures multi-line prompts are sent atomically before
+	// the submit key triggers execution.
+	payload := []byte(ctrlU + pasteStart + p.Prompt + pasteEnd + submitKey)
+
+	if err := client.Pipe(agentID, p.SessionID, payload); err != nil {
+		return nil, fmt.Errorf("claude: ExecInSession: pipe: %w", err)
+	}
+	logger.Debug("ExecInSession: prompt piped", "sessionID", p.SessionID, "promptLen", len(p.Prompt))
+	return &codeagent.ExecInSessionResult{SessionID: p.SessionID}, nil
 }
 
 // ============================================================

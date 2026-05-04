@@ -69,6 +69,7 @@ type claudeAgent struct {
 	sessionID       string
 	sbx             *sandbox.Config
 	sbxRuntime      sandbox.SandboxRuntime
+	ptyClient       PTYClient
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
 }
@@ -104,6 +105,14 @@ func New(workDir, model string) (codeagent.CodeAgent, error) {
 		permMode:     codeagent.PermissionDefault,
 		info:         codeagent.CodeAgentInfo{Provider: Claude, Name: "claude", Version: ver},
 	}, nil
+}
+
+// SetPTYClient wires the PTY daemon client used by ExecInSession.
+// Call this after New() when interactive PTY support is needed.
+func (a *claudeAgent) SetPTYClient(c PTYClient) {
+	a.mu.Lock()
+	a.ptyClient = c
+	a.mu.Unlock()
 }
 
 // ============================================================
