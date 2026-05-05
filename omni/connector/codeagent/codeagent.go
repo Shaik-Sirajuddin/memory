@@ -94,6 +94,12 @@ type DiscoverResult struct {
 	Models []ModelID
 }
 
+// PTYClient is the minimal interface each connector needs to send
+// prompts into an active PTY session via the PTY daemon.
+type PTYClient interface {
+	Pipe(agentID, sessionID string, data []byte) error
+}
+
 // CodeAgent implements Model
 // CodeAgent Provides access to sessions
 // All operations of CodeAgent are concurrent safe
@@ -126,7 +132,16 @@ type CodeAgent interface {
 	// Stop terminates the active interactive session.
 	Stop()
 
-	// Discover returns available models 
+	// SetPTYClient wires the PTY daemon client used by ExecInSession.
+	// May be called after construction; safe for concurrent use.
+	SetPTYClient(PTYClient)
+
+	// ExecInSession sends a prompt into an active interactive PTY session.
+	// Fire-and-forget: returns immediately, does not collect output.
+	// Returns error if session is not live or not a PTY session.
+	ExecInSession(ExecInSessionParams) (*ExecInSessionResult, error)
+
+	// Discover returns available models
 	// else returns default model
 	Discover() (DiscoverResult, error)
 }

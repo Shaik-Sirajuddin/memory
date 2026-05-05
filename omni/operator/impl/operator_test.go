@@ -649,6 +649,10 @@ func (s *stubCodeAgent) GetUserIdentity() codeagent.UserIdentify {
 
 func (s *stubCodeAgent) Stop() {}
 
+func (s *stubCodeAgent) ExecInSession(codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
+	return nil, nil
+}
+
 func (s *stubCodeAgent) Discover() (codeagent.DiscoverResult, error) {
 	return codeagent.DiscoverResult{}, nil
 }

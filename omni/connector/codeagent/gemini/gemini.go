@@ -58,14 +58,18 @@ type geminiAgent struct {
 	systemPrompt    string
 	sessionID       string
 	sbx             *sandbox.Config
+	ptyClient       PTYClient
+	masterPTY       *os.File
 	info            codeagent.CodeAgentInfo
 	settings        *settingsResolver
 	activeCmd       *exec.Cmd
 	registeredHooks []*hooks.HookData
 }
 
+type PTYClient = codeagent.PTYClient
+
 // New returns a CodeAgent backed by the local gemini CLI binary.
-func New(workDir, model string) (codeagent.CodeAgent, error) {
+func New(workDir, model string, c PTYClient) (codeagent.CodeAgent, error) {
 	binPath, err := lookPath("gemini")
 	if err != nil {
 		return nil, fmt.Errorf("gemini: binary not found in PATH: %w", err)
@@ -87,12 +91,19 @@ func New(workDir, model string) (codeagent.CodeAgent, error) {
 	logger.Info("gemini agent initialised", "workDir", workDir, "model", model, "version", ver)
 
 	return &geminiAgent{
-		workDir:  workDir,
-		model:    model,
-		permMode: codeagent.PermissionAcceptEdits,
-		info:     codeagent.CodeAgentInfo{Provider: Gemini, Name: "gemini", Version: ver},
-		settings: newSettingsResolver(),
+		workDir:   workDir,
+		model:     model,
+		permMode:  codeagent.PermissionAcceptEdits,
+		ptyClient: c,
+		info:      codeagent.CodeAgentInfo{Provider: Gemini, Name: "gemini", Version: ver},
+		settings:  newSettingsResolver(),
 	}, nil
+}
+
+func (a *geminiAgent) SetPTYClient(c PTYClient) {
+	a.mu.Lock()
+	a.ptyClient = c
+	a.mu.Unlock()
 }
 
 func (a *geminiAgent) Info() *codeagent.CodeAgentInfo { return &a.info }
@@ -320,16 +331,26 @@ func (a *geminiAgent) GetRegisteredHooks() []*hooks.HookData {
 			logger.Warn("GetRegisteredHooks: could not read settings", "path", settingsPath, "err", err)
 			return
 		}
-		for eventName, matchers := range f.Hooks {
+		if f.Hooks == nil {
+			return
+		}
+		for eventName, matchers := range hookArraysByEvent(f.Hooks) {
 			hookID, ok := hookIDFromEvent(eventName)
 			if !ok {
 				continue
 			}
 			for _, m := range matchers {
 				for _, h := range m.Hooks {
-					uid := h.UID
+					uid := ""
+					if h.Name != nil {
+						uid = *h.Name
+					}
+					command := ""
+					if h.Command != nil {
+						command = *h.Command
+					}
 					if uid == "" {
-						uid = fmt.Sprintf("%s:%s", eventName, h.Command)
+						uid = fmt.Sprintf("%s:%s", eventName, command)
 					}
 					if _, dup := seen[uid]; dup {
 						continue
@@ -373,26 +394,29 @@ func (a *geminiAgent) DeleteHook(p hooks.DeleteHookParams) (bool, error) {
 	f, err := readSettingsFile(path)
 	if err == nil {
 		before := countHooks(f.Hooks)
-		for eventName, matchers := range f.Hooks {
-			filteredMatchers := make([]geminiHookMatcher, 0, len(matchers))
-			for _, m := range matchers {
-				filteredDefs := m.Hooks[:0]
-				for _, def := range m.Hooks {
-					if def.UID != p.UID {
-						filteredDefs = append(filteredDefs, def)
+		if f.Hooks != nil {
+			filterHookArray := func(arr HookDefinitionArray) HookDefinitionArray {
+				filteredMatchers := make(HookDefinitionArray, 0, len(arr))
+				for _, m := range arr {
+					filteredDefs := m.Hooks[:0]
+					for _, def := range m.Hooks {
+						if def.Name == nil || *def.Name != p.UID {
+							filteredDefs = append(filteredDefs, def)
+						}
 					}
+					if len(filteredDefs) == 0 {
+						continue
+					}
+					m.Hooks = filteredDefs
+					filteredMatchers = append(filteredMatchers, m)
 				}
-				if len(filteredDefs) == 0 {
-					continue
-				}
-				m.Hooks = filteredDefs
-				filteredMatchers = append(filteredMatchers, m)
+				return filteredMatchers
 			}
-			if len(filteredMatchers) == 0 {
-				delete(f.Hooks, eventName)
-			} else {
-				f.Hooks[eventName] = filteredMatchers
-			}
+			f.Hooks.BeforeTool = filterHookArray(f.Hooks.BeforeTool)
+			f.Hooks.AfterTool = filterHookArray(f.Hooks.AfterTool)
+			f.Hooks.SessionStart = filterHookArray(f.Hooks.SessionStart)
+			f.Hooks.BeforeAgent = filterHookArray(f.Hooks.BeforeAgent)
+			f.Hooks.AfterAgent = filterHookArray(f.Hooks.AfterAgent)
 		}
 		after := countHooks(f.Hooks)
 		if after < before {
@@ -410,9 +434,12 @@ func (a *geminiAgent) DeleteHook(p hooks.DeleteHookParams) (bool, error) {
 	return true, nil
 }
 
-func countHooks(m map[string][]geminiHookMatcher) int {
+func countHooks(h *SettingsSchemaJsonHooks) int {
+	if h == nil {
+		return 0
+	}
 	total := 0
-	for _, matchers := range m {
+	for _, matchers := range hookArraysByEvent(h) {
 		for _, matcher := range matchers {
 			total += len(matcher.Hooks)
 		}

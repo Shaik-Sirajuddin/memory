@@ -63,6 +63,19 @@ var StaticModels = []ModelID{ModelO4Mini, ModelO3, ModelGPT41, ModelGPT41Mini, M
 const DefaultModel = ModelO4Mini
 
 // ============================================================
+// PTY client
+// ============================================================
+
+// Option configures a codexAgent at construction time.
+type Option func(*codexAgent)
+
+// WithPTYClient attaches a PTY daemon client so that ExecInSession can write
+// prompts into an active interactive session. It overrides the c param of New.
+func WithPTYClient(c codeagent.PTYClient) Option {
+	return func(a *codexAgent) { a.ptyClient = c }
+}
+
+// ============================================================
 // Agent struct
 // ============================================================
 
@@ -73,16 +86,19 @@ type codexAgent struct {
 	model           string
 	sessionID       string
 	activeCmd       *exec.Cmd
+	masterPTY       *os.File
 	sbx             *sandbox.Config
 	sbxRuntime      sandbox.SandboxRuntime
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
 	resolver        *settings.Resolver
+	ptyClient       codeagent.PTYClient
 }
 
 // New returns a CodeAgent backed by the local codex CLI binary.
-// workDir defaults to the process working directory; model defaults to DefaultModel.
-func New(workDir, model string) (codeagent.CodeAgent, error) {
+// c is the PTY daemon client used by ExecInSession; pass nil if not needed.
+// Optional Option values (e.g. WithPTYClient) may override c.
+func New(workDir, model string, c codeagent.PTYClient, opts ...Option) (codeagent.CodeAgent, error) {
 	binPath, err := resolveBinary(config.Binary)
 	if err != nil {
 		return nil, fmt.Errorf("codex: binary not found: %w", err)
@@ -95,21 +111,35 @@ func New(workDir, model string) (codeagent.CodeAgent, error) {
 			return nil, fmt.Errorf("codex: resolve workdir: %w", err)
 		}
 	}
-	if model == "" {
-		model = DefaultModel
-	}
+	// let codex default to a model
+	// if model == "" {
+	// 	model = DefaultModel
+	// }
 
 	ver, _ := captureOutput(workDir, "codex", "--version")
 	ver = trimSpace(ver)
 	logger.Info("codex agent initialised", "workDir", workDir, "model", model, "version", ver)
 
-	return &codexAgent{
-		binPath:  binPath,
-		workDir:  workDir,
-		model:    model,
-		info:     codeagent.CodeAgentInfo{Provider: Codex, Name: "codex", Version: ver},
-		resolver: settings.New(Codex),
-	}, nil
+	a := &codexAgent{
+		binPath:   binPath,
+		workDir:   workDir,
+		model:     model,
+		ptyClient: c,
+		info:      codeagent.CodeAgentInfo{Provider: Codex, Name: "codex", Version: ver},
+		resolver:  settings.New(Codex),
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a, nil
+}
+
+// SetPTYClient replaces the PTY daemon client after construction.
+// Safe for concurrent use; opts passed to New may also set this via WithPTYClient.
+func (a *codexAgent) SetPTYClient(c codeagent.PTYClient) {
+	a.mu.Lock()
+	a.ptyClient = c
+	a.mu.Unlock()
 }
 
 // ============================================================

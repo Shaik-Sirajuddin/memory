@@ -11,10 +11,10 @@
 
 | Key | Purpose | Written By |
 |---|---|---|
-| `model` | Default model selection | `Create`, `UpdateDefaults` |
-| `approvalMode` | Approval policy used by Gemini CLI | `Create`, `UpdateDefaults` |
-| `sandbox` | Sandbox profile (`read-only` or full access) | `UpdateSessionSandbox`, `UpdateDefaults`, session sync |
-| `hooks` | Hook registration definitions | `Register`, `DeleteHook`, hook sync |
+| `model.name` | Default model selection | `Create`, `UpdateDefaults` |
+| `general.defaultApprovalMode` | Approval policy used by Gemini CLI | `Create`, `UpdateDefaults` |
+| `tools.sandbox` | Sandbox profile (`read-only` or full access) | `UpdateSessionSandbox`, `UpdateDefaults`, session sync |
+| `hooks.<event>` | Hook registration definitions keyed by Gemini hook event | `Register`, `DeleteHook`, hook sync |
 
 ## Environment and Runtime Expectations
 
@@ -30,4 +30,4 @@
 |---|---|
 | Global settings unavailable | Connector continues with in-memory values and logs warning-level diagnostics. |
 | Workspace settings missing | Connector creates workspace settings file during sync operations. |
-| Unknown existing settings keys | Connector preserves unrelated keys while updating managed keys. |
+| Settings schema | Connector reads and writes Gemini settings through the generated `SettingsSchemaJson` schema. Unsupported unknown fields may be omitted when a settings file is rewritten. |

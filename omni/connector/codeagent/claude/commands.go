@@ -7,12 +7,15 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 const (
@@ -169,30 +172,94 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 
 	cmd := localCommand(workDir, "claude", args...)
 
-	// PTY mode: start under a pseudo-terminal so ExecInSession can write directly
-	// to the master fd without going through the daemon's HTTP layer.
+	// PTY mode: full I/O bridge so the user sees output and can type, while
+	// ExecInSession can inject prompts via the same serialised write channel.
 	if client != nil {
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+
 		master, err := pty.Start(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("claude: resume: pty start: %w", err)
 		}
+
+		// Propagate terminal resize events to the PTY.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGWINCH)
+		go func() {
+			for range sigCh {
+				_ = pty.InheritSize(os.Stdin, master)
+			}
+		}()
+		sigCh <- syscall.SIGWINCH // set initial size
+
+		// Switch stdin to raw mode so keystrokes go straight through.
+		var oldState *term.State
+		if st, err := term.MakeRaw(int(os.Stdin.Fd())); err != nil {
+			logger.Warn("Resume: raw mode unavailable", "err", err)
+		} else {
+			oldState = st
+		}
+
+		// Serialised write channel — both keyboard input and ExecInSession use it.
+		wch := make(chan []byte, 128)
 		a.mu.Lock()
 		a.masterPTY = master
+		a.writeCh = wch
 		a.mu.Unlock()
+
+		// Single writer goroutine: drains wch and writes to PTY master.
+		go func() {
+			for chunk := range wch {
+				_, _ = master.Write(chunk)
+			}
+		}()
+
+		// Bridge PTY master → stdout so the user sees Claude's output.
+		go func() { _, _ = io.Copy(os.Stdout, master) }()
+
+		// Bridge stdin → wch so the user can type.
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := os.Stdin.Read(buf)
+				if n > 0 {
+					wch <- append([]byte(nil), buf[:n]...)
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
 
 		pid := strconv.Itoa(cmd.Process.Pid)
 		logger.Info("Resume: PTY session started", "pid", pid, "sessionID", resumeID)
 
+		// done is closed when the child exits, unblocking the return below.
+		done := make(chan struct{})
+
+		// Cleanup goroutine: restores terminal state and notifies daemon on exit.
 		go func() {
 			_ = cmd.Wait()
+			signal.Stop(sigCh)
+			close(sigCh)
+			if oldState != nil {
+				_ = term.Restore(int(os.Stdin.Fd()), oldState)
+			}
+			close(wch)
 			a.mu.Lock()
 			a.masterPTY = nil
+			a.writeCh = nil
 			a.mu.Unlock()
 			if s, ok := client.(ptyStoper); ok {
 				_ = s.Stop(agentID, resumeID)
 			}
 			logger.Debug("Resume: PTY session terminated", "sessionID", resumeID)
+			close(done)
 		}()
+
+		// Block until the session ends — keeps the terminal attached and prevents
+		// the CLI process from exiting while the PTY I/O bridge is running.
+		<-done
 
 		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resumeID}, nil
 	}
@@ -256,20 +323,16 @@ func (a *claudeAgent) Stop() {
 // returns immediately without waiting for a response.
 func (a *claudeAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
 	a.mu.RLock()
-	master := a.masterPTY
+	wch := a.writeCh
 	client := a.ptyClient
 	agentID := a.sessionID
 	a.mu.RUnlock()
 
-	// Bracketed-paste ensures multi-line prompts are sent atomically before
-	// the submit key triggers execution.
-	payload := []byte(ctrlU + pasteStart + p.Prompt + pasteEnd + submitKey)
+	payload := buildExecPayload(p.Prompt)
 
-	if master != nil {
-		// Direct write to the PTY master — no HTTP round-trip needed.
-		if _, err := master.Write(payload); err != nil {
-			return nil, fmt.Errorf("claude: ExecInSession: write to PTY: %w", err)
-		}
+	if wch != nil {
+		// Send through the serialised write channel — safe with concurrent keyboard input.
+		wch <- payload
 	} else if client != nil {
 		if err := client.Pipe(agentID, p.SessionID, payload); err != nil {
 			return nil, fmt.Errorf("claude: ExecInSession: session not live: %w", err)
@@ -411,6 +474,16 @@ func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult,
 	}()
 
 	return &codeagent.StreamResult{Events: ch, SessionID: sessionID}, nil
+}
+
+// ============================================================
+// PTY helpers
+// ============================================================
+
+// buildExecPayload constructs the bracketed-paste sequence used by ExecInSession
+// to inject a prompt into a live PTY without triggering mid-paste interpretation.
+func buildExecPayload(prompt string) []byte {
+	return []byte(ctrlU + pasteStart + prompt + pasteEnd + submitKey)
 }
 
 // ============================================================

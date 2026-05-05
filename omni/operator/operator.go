@@ -30,6 +30,7 @@ type CreateAgentParams struct {
 	AllowGeneratedName bool                 `json:"allow_generated_name,omitempty"`
 	ResumeIfExists     bool                 `json:"resume_if_exists,omitempty"`
 	Interactive        bool                 `json:"interactive"` // launch after create; default true
+	SessionID          string               `json:"session_id,omitempty"`
 }
 
 type ResumeAgentParams struct {
@@ -38,6 +39,7 @@ type ResumeAgentParams struct {
 	InitIfMissing bool                 `json:"init_if_missing,omitempty"`
 	Provider      codeagent.Provider   `json:"provider,omitempty"`
 	Model         string               `json:"model,omitempty"`
+	SessionID     string               `json:"session_id,omitempty"`
 }
 
 type DeleteAgentParams struct {
@@ -93,6 +95,23 @@ type SwitchProviderParams struct {
 	ID         string             `json:"id"`
 	CleanStart bool               `json:"clean_start,omitempty"`
 	Provider   codeagent.Provider `json:"provider,omitempty"`
+	SessionID  string             `json:"session_id,omitempty"`
+}
+
+type ExecInSessionParams struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	Prompt    string `json:"prompt"`
+}
+
+type ExecInSessionResult struct {
+	SessionID string `json:"session_id"`
+}
+
+type PipeParams struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	Data      []byte `json:"data"`
 }
 
 // ProviderModels pairs a provider with its available model IDs.
@@ -183,4 +202,7 @@ type Operator interface {
 	// SwtichProvider switches the underlying model of current agent
 	// Retaining memories from the summaries generated
 	SwitchProvider(SwitchProviderParams) error
+
+	ExecInSession(ExecInSessionParams) (*ExecInSessionResult, error)
+	Pipe(PipeParams) error
 }

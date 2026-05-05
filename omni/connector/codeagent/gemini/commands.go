@@ -12,10 +12,19 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"github.com/creack/pty"
 )
 
 const (
 	Gemini codeagent.Provider = "gemini"
+
+	submitKey = "\x1b[13;2u" // CSI-u Shift+Enter
+)
+
+const (
+	ctrlU      = "\x15"
+	pasteStart = "\x1b[200~"
+	pasteEnd   = "\x1b[201~"
 )
 
 var (
@@ -40,9 +49,13 @@ func (a *geminiAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	if p.SystemPrompt != "" {
 		a.systemPrompt = p.SystemPrompt
 	}
-	id := p.ID
+	requestedSessionID := strings.TrimSpace(p.SessionID)
+	id := requestedSessionID
 	if id == "" {
-		id = generateID()
+		id = p.ID
+		if id == "" {
+			id = generateID()
+		}
 	}
 	a.sessionID = id
 	workDir := a.workDir
@@ -56,6 +69,10 @@ func (a *geminiAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	}
 	logger.Debug("Create: gemini binary ok", "version", trimSpace(out))
 
+	if identity := a.GetUserIdentity(); !identity.Authenticated {
+		return nil, errors.New("gemini: create: not authenticated or gemini CLI unavailable")
+	}
+
 	if err := syncModelAndModeConfig(workDir, model, permMode); err != nil {
 		logger.Warn("Create: could not sync model/mode config", "err", err)
 	}
@@ -63,17 +80,50 @@ func (a *geminiAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		logger.Warn("Create: could not sync sandbox config", "err", err)
 	}
 
-	return &codeagent.CreateSessionResult{ID: id, Name: p.Name}, nil
+	sessionPrompt := "reply-with-hi-" + id
+	if _, err := captureOutput(workDir, "gemini", "-p", sessionPrompt); err != nil {
+		return nil, fmt.Errorf("gemini: create: seed session: %w", err)
+	}
+	if requestedSessionID != "" {
+		a.mu.Lock()
+		a.sessionID = requestedSessionID
+		a.mu.Unlock()
+		return &codeagent.CreateSessionResult{ID: requestedSessionID, Name: p.Name}, nil
+	}
+
+	listOut, err := captureOutput(workDir, "gemini", "--list-sessions")
+	if err != nil {
+		return nil, fmt.Errorf("gemini: create: list sessions: %w", err)
+	}
+	actualID, err := sessionIDForPrompt(listOut, sessionPrompt)
+	if err != nil {
+		return nil, err
+	}
+
+	a.mu.Lock()
+	a.sessionID = actualID
+	a.mu.Unlock()
+
+	return &codeagent.CreateSessionResult{ID: actualID, Name: p.Name}, nil
 }
 
 func (a *geminiAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
 	a.mu.RLock()
 	workDir := a.workDir
+	ptyClient := a.ptyClient
+	live := a.masterPTY != nil
 	a.mu.RUnlock()
+	if live {
+		return nil, errors.New("gemini: PTY session already active; stop it before resuming")
+	}
 
 	geminiArgs := []string{"--resume"}
-	if p.ID != "" {
-		geminiArgs = append(geminiArgs, p.ID)
+	resolvedSessionID := strings.TrimSpace(p.SessionID)
+	if resolvedSessionID == "" {
+		resolvedSessionID = p.ID
+	}
+	if resolvedSessionID != "" {
+		geminiArgs = append(geminiArgs, resolvedSessionID)
 	}
 	if p.ForkSession {
 		// Gemini CLI does not expose a fork-session flag in non-interactive args.
@@ -82,6 +132,39 @@ func (a *geminiAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 
 	cmd := exec.Command(resumeShell(), "-lc", buildShellExecCommand("gemini", geminiArgs...))
 	cmd.Dir = workDir
+	if ptyClient != nil {
+		master, err := pty.Start(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("gemini: resume: pty start: %w", err)
+		}
+		pid := fmt.Sprintf("%d", cmd.Process.Pid)
+		if resolvedSessionID == "" {
+			resolvedSessionID = "latest"
+		}
+
+		a.mu.Lock()
+		a.masterPTY = master
+		a.activeCmd = cmd
+		a.sessionID = resolvedSessionID
+		a.mu.Unlock()
+
+		go func(sessionID string, client PTYClient, master *os.File) {
+			_ = cmd.Wait()
+			_ = master.Close()
+			a.mu.Lock()
+			a.masterPTY = nil
+			a.mu.Unlock()
+			if stopper, ok := client.(interface {
+				Stop(agentID, sessionID string) error
+			}); ok {
+				_ = stopper.Stop(string(Gemini), sessionID)
+			}
+		}(resolvedSessionID, ptyClient, master)
+
+		logger.Info("Resume: interactive PTY session started", "pid", pid, "sessionID", resolvedSessionID)
+		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
+	}
+
 	cmd.Stdin = interactiveStdin
 	cmd.Stdout = interactiveStdout
 	cmd.Stderr = interactiveStderr
@@ -92,7 +175,6 @@ func (a *geminiAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 	pid := fmt.Sprintf("%d", cmd.Process.Pid)
 	a.mu.Lock()
 	a.activeCmd = cmd
-	resolvedSessionID := p.ID
 	if resolvedSessionID == "" {
 		resolvedSessionID = "latest"
 	}
@@ -101,6 +183,33 @@ func (a *geminiAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 
 	logger.Info("Resume: interactive session started", "pid", pid, "sessionID", resolvedSessionID)
 	return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
+}
+
+func (a *geminiAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
+	sessionID := strings.TrimSpace(p.SessionID)
+	if sessionID == "" {
+		return nil, errors.New("session not live")
+	}
+
+	a.mu.RLock()
+	client := a.ptyClient
+	master := a.masterPTY
+	a.mu.RUnlock()
+
+	payload := []byte(ctrlU + pasteStart + p.Prompt + pasteEnd + submitKey)
+	if master != nil {
+		if _, err := master.Write(payload); err != nil {
+			return nil, err
+		}
+		return &codeagent.ExecInSessionResult{SessionID: sessionID}, nil
+	}
+	if client == nil {
+		return nil, errors.New("no active PTY session")
+	}
+	if err := client.Pipe(string(Gemini), sessionID, payload); err != nil {
+		return nil, err
+	}
+	return &codeagent.ExecInSessionResult{SessionID: sessionID}, nil
 }
 
 func (a *geminiAgent) List(_ codeagent.ListSessionsParams) (*codeagent.ListSessionsResult, error) {
@@ -372,4 +481,14 @@ func parseSessionList(raw, workDir, model string) []*codeagent.Session {
 		})
 	}
 	return sessions
+}
+
+func sessionIDForPrompt(raw, prompt string) (string, error) {
+	sessions := parseSessionList(raw, "", "")
+	for _, session := range sessions {
+		if strings.Contains(session.Name, prompt) {
+			return session.ID, nil
+		}
+	}
+	return "", fmt.Errorf("gemini: create: session prompt %q not found in session list", prompt)
 }

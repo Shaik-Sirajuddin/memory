@@ -1,13 +1,18 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/Shaik-Sirajuddin/memory/config"
@@ -48,6 +53,7 @@ func Entrypoint(op operator.Operator, resolver config.OmniConfigResolver) *Defau
 	root.AddCommand(c.newTeamCommand())
 	root.AddCommand(c.newTeamInitCommand())
 	root.AddCommand(c.newDoctorCommand())
+	root.AddCommand(c.newServerCommand())
 
 	c.root = root
 	return c
@@ -58,7 +64,16 @@ func (c *DefaultCli) Install() error {
 	if c == nil || c.root == nil {
 		return errors.New("cli is not initialized")
 	}
+	normalizeSessionIDFlag(os.Args[1:])
 	return c.root.Execute()
+}
+
+func normalizeSessionIDFlag(args []string) {
+	for i, arg := range args {
+		if arg == "-sid" {
+			args[i] = "--session-id"
+		}
+	}
 }
 
 func (c *DefaultCli) newConfigCommand() *cobra.Command {
@@ -158,6 +173,8 @@ func (c *DefaultCli) newAgentCommand() *cobra.Command {
 	agentCmd.AddCommand(c.newAgentDeleteCommand())
 	agentCmd.AddCommand(c.newAgentSwitchProviderCommand())
 	agentCmd.AddCommand(c.newAgentSandboxCommand())
+	agentCmd.AddCommand(c.newAgentPipeCommand())
+	agentCmd.AddCommand(c.newAgentExecCommand())
 
 	return agentCmd
 }
@@ -270,6 +287,122 @@ func (c *DefaultCli) newDoctorInstallCommand() *cobra.Command {
 
 	cmd.Flags().StringP("output", "o", flags.Output, "Output format: table|yaml|json")
 	return cmd
+}
+
+func (c *DefaultCli) newServerCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "server",
+		Short: "Manage omni background services",
+	}
+	cmd.AddCommand(c.newServerStartCommand())
+	cmd.AddCommand(c.newServerStopCommand())
+	cmd.AddCommand(c.newServerStatusCommand())
+	return cmd
+}
+
+func (c *DefaultCli) newServerStartCommand() *cobra.Command {
+	var debug bool
+	cmd := &cobra.Command{
+		Use:   "start",
+		Short: "Start the PTY daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := runSystemctl("start"); err == nil {
+				fmt.Println("server started")
+				return nil
+			}
+			bin, err := resolvePTYDaemonBinary()
+			if err != nil {
+				return err
+			}
+			proc := exec.Command(bin)
+			proc.Stdout = os.Stdout
+			proc.Stderr = os.Stderr
+			if debug {
+				proc.Env = append(os.Environ(), "DEV=1")
+			}
+			if err := proc.Start(); err != nil {
+				return fmt.Errorf("start ptydaemon: %w", err)
+			}
+			if err := os.WriteFile(ptyDaemonPIDFile(), []byte(strconv.Itoa(proc.Process.Pid)), 0o644); err != nil {
+				return fmt.Errorf("write ptydaemon pid file: %w", err)
+			}
+			_ = proc.Process.Release()
+			fmt.Println("server started")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&debug, "debug", "d", false, "Start daemon in debug mode")
+	return cmd
+}
+
+func (c *DefaultCli) newServerStopCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the PTY daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := runSystemctl("stop"); err == nil {
+				_ = os.Remove(ptyDaemonPIDFile())
+				fmt.Println("server stopped")
+				return nil
+			}
+			pidData, err := os.ReadFile(ptyDaemonPIDFile())
+			if err != nil {
+				return fmt.Errorf("read ptydaemon pid file: %w", err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+			if err != nil {
+				return fmt.Errorf("parse ptydaemon pid: %w", err)
+			}
+			proc, err := os.FindProcess(pid)
+			if err != nil {
+				return fmt.Errorf("find ptydaemon process: %w", err)
+			}
+			if err := proc.Signal(syscall.SIGTERM); err != nil {
+				return fmt.Errorf("stop ptydaemon: %w", err)
+			}
+			_ = os.Remove(ptyDaemonPIDFile())
+			fmt.Println("server stopped")
+			return nil
+		},
+	}
+}
+
+type serverStatusResponse struct {
+	PID      int                         `json:"pid"`
+	Uptime   float64                     `json:"uptime"`
+	Sessions int                         `json:"sessions"`
+	Active   []serverStatusActiveSession `json:"active"`
+}
+
+type serverStatusActiveSession struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	PID       int    `json:"pid"`
+	Status    string `json:"status"`
+	StartedAt string `json:"started_at"`
+}
+
+func (c *DefaultCli) newServerStatusCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Print PTY daemon status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, err := fetchServerStatus(ptyDaemonSocketPath())
+			if err != nil {
+				return printSystemctlStatus()
+			}
+			fmt.Printf("omni-server  pid=%d  uptime=%.0fs  sessions=%d\n", status.PID, status.Uptime, status.Sessions)
+			if len(status.Active) == 0 {
+				fmt.Println("(no active sessions)")
+				return nil
+			}
+			for _, session := range status.Active {
+				fmt.Printf("%s/%s  pid=%d  status=%s  started=%s\n",
+					session.AgentID, session.SessionID, session.PID, session.Status, session.StartedAt)
+			}
+			return nil
+		},
+	}
 }
 
 func (c *DefaultCli) newTeamListCommand() *cobra.Command {
@@ -444,6 +577,7 @@ func (c *DefaultCli) newAgentListCommand() *cobra.Command {
 
 func (c *DefaultCli) newAgentCreateCommand() *cobra.Command {
 	flags := config.ProvisionAgentCreateFlags()
+	var sessionID string
 
 	createCmd := &cobra.Command{
 		Use:   "init [name]",
@@ -468,6 +602,7 @@ func (c *DefaultCli) newAgentCreateCommand() *cobra.Command {
 				AllowGeneratedName: resolved.AllowGeneratedName,
 				ResumeIfExists:     resolved.ResumeIfExists,
 				Interactive:        resolved.Interactive,
+				SessionID:          sessionID,
 			})
 		},
 	}
@@ -478,12 +613,14 @@ func (c *DefaultCli) newAgentCreateCommand() *cobra.Command {
 	createCmd.Flags().Bool("allow_generated_name", flags.AllowGeneratedName, "Allow operator to generate agent name when name is empty")
 	createCmd.Flags().BoolP("resume_if_exists", "r", flags.ResumeIfExists, "Resume agent when the provided name already exists in workspace")
 	createCmd.Flags().Bool("interactive", flags.Interactive, "Launch agent after create")
+	createCmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
 
 	return createCmd
 }
 
 func (c *DefaultCli) newAgentResumeCommand() *cobra.Command {
 	flags := config.ProvisionAgentResumeFlags()
+	var sessionID string
 
 	cmd := &cobra.Command{
 		Use:   "resume <name>",
@@ -503,6 +640,7 @@ func (c *DefaultCli) newAgentResumeCommand() *cobra.Command {
 				InitIfMissing: resolved.InitIfMissing,
 				Provider:      codeagent.Provider(resolved.Provider),
 				Model:         resolved.Model,
+				SessionID:     sessionID,
 			})
 		},
 	}
@@ -511,6 +649,7 @@ func (c *DefaultCli) newAgentResumeCommand() *cobra.Command {
 	cmd.Flags().BoolP("init_if_missing", "i", flags.InitIfMissing, "Create agent when requested name is not found in workspace")
 	cmd.Flags().StringP("provider", "p", flags.Provider, "Provider used only when --init_if_missing creates a new agent")
 	cmd.Flags().String("model", flags.Model, "Model used only when --init_if_missing creates a new agent")
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
 	return cmd
 }
 
@@ -584,6 +723,7 @@ func (c *DefaultCli) newAgentDeleteCommand() *cobra.Command {
 
 func (c *DefaultCli) newAgentSwitchProviderCommand() *cobra.Command {
 	flags := config.ProvisionAgentSwitchProviderFlags()
+	var sessionID string
 
 	switchCmd := &cobra.Command{
 		Use:   "switch-provider [name]",
@@ -617,6 +757,7 @@ func (c *DefaultCli) newAgentSwitchProviderCommand() *cobra.Command {
 				ID:         resolved.ID,
 				Provider:   codeagent.Provider(resolved.Provider),
 				CleanStart: resolved.CleanStart,
+				SessionID:  sessionID,
 			})
 		},
 	}
@@ -626,8 +767,82 @@ func (c *DefaultCli) newAgentSwitchProviderCommand() *cobra.Command {
 	switchCmd.Flags().String("workspace", flags.Workspace, "Workspace directory (used with name)")
 	switchCmd.Flags().StringP("provider", "p", flags.Provider, "Target provider")
 	switchCmd.Flags().Bool("clean_start", flags.CleanStart, "Force a clean session instead of reusing an active one")
+	switchCmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
 
 	return switchCmd
+}
+
+func (c *DefaultCli) newAgentPipeCommand() *cobra.Command {
+	var prompt string
+	var sessionID string
+
+	cmd := &cobra.Command{
+		Use:   "pipe <name>",
+		Short: "Write raw data to an agent session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c.operator == nil {
+				return errors.New("operator is required")
+			}
+			if prompt == "" {
+				return errors.New("prompt is required")
+			}
+			return c.operator.Pipe(operator.PipeParams{
+				AgentID:   args[0],
+				SessionID: sessionID,
+				Data:      []byte(prompt),
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&prompt, "prompt", "", "Prompt data to write")
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
+	_ = cmd.MarkFlagRequired("prompt")
+	return cmd
+}
+
+func (c *DefaultCli) newAgentExecCommand() *cobra.Command {
+	var prompt string
+	var sessionID string
+	var resume bool
+
+	cmd := &cobra.Command{
+		Use:   "exec <name>",
+		Short: "Send a prompt to an agent session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c.operator == nil {
+				return errors.New("operator is required")
+			}
+			if prompt == "" {
+				return errors.New("prompt is required")
+			}
+			name := args[0]
+			if resume {
+				if err := c.operator.ResumeAgent(operator.ResumeAgentParams{
+					Name:      name,
+					SessionID: sessionID,
+				}); err != nil {
+					return err
+				}
+			}
+			if _, err := c.operator.ExecInSession(operator.ExecInSessionParams{
+				AgentID:   name,
+				SessionID: sessionID,
+				Prompt:    prompt,
+			}); err != nil {
+				return err
+			}
+			fmt.Println("prompt sent")
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&prompt, "prompt", "", "Prompt to send")
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
+	cmd.Flags().BoolVarP(&resume, "resume", "r", false, "Resume agent before sending prompt")
+	_ = cmd.MarkFlagRequired("prompt")
+	return cmd
 }
 
 func (c *DefaultCli) newAgentSandboxCommand() *cobra.Command {
@@ -802,6 +1017,87 @@ func sandboxConfigDir(workspaceDir, agentName string) string {
 		return ""
 	}
 	return filepath.Join(workspaceDir, operator.MemoryDirName, "agents", agentName, "sandbox")
+}
+
+func runSystemctl(action string) error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return err
+	}
+	if err := exec.Command("systemctl", "--user", action, "omni-server").Run(); err == nil {
+		return nil
+	}
+	return exec.Command("systemctl", action, "omni-server").Run()
+}
+
+func printSystemctlStatus() error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		fmt.Println("server not running")
+		return nil
+	}
+	out, err := exec.Command("systemctl", "--user", "status", "omni-server").Output()
+	if err != nil {
+		fmt.Println("server not running")
+		return nil
+	}
+	fmt.Print(string(out))
+	return nil
+}
+
+func fetchServerStatus(socketPath string) (*serverStatusResponse, error) {
+	client := newUnixHTTPClient(socketPath)
+	resp, err := client.Get("http://localhost/status")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("server status: %s", resp.Status)
+	}
+	var status serverStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+func ptyDaemonSocketPath() string {
+	if path := os.Getenv("PTYDAEMON_SOCKET"); path != "" {
+		return path
+	}
+	return "/tmp/ptydaemon.sock"
+}
+
+func newUnixHTTPClient(socketPath string) *http.Client {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", socketPath)
+		},
+	}
+	return &http.Client{Transport: transport}
+}
+
+func resolvePTYDaemonBinary() (string, error) {
+	candidates := []string{
+		filepath.Join("svc", "ptydaemon", "omni-server"),
+		filepath.Join("svc", "ptydaemon", "cmd", "omni-server"),
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	if path, err := exec.LookPath("omni-server"); err == nil {
+		return path, nil
+	}
+	return "", errors.New("omni-server binary not found")
+}
+
+func ptyDaemonPIDFile() string {
+	if path := os.Getenv("PTYDAEMON_PID"); path != "" {
+		return path
+	}
+	return filepath.Join(os.TempDir(), "omni-server.pid")
 }
 
 func loadFlags(cmd *cobra.Command, target any) error {

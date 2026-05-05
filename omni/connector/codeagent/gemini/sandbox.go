@@ -39,12 +39,12 @@ func (a *geminiAgent) UpdateSessionSandbox(p codeagent.UpdateSessionSandboxParam
 }
 
 func syncModelAndModeConfig(workDir, model string, mode codeagent.PermissionMode) error {
-	return writeWorkspaceSettings(workDir, func(s *geminiSettingsFile) {
+	return writeWorkspaceSettings(workDir, func(s *SettingsSchemaJson) {
 		if model != "" {
-			s.Model = model
+			s.Model.Name = stringPtr(model)
 		}
 		if am := approvalModeFlag(mode); am != "" {
-			s.ApprovalMode = am
+			s.General.DefaultApprovalMode = SettingsSchemaJsonGeneralDefaultApprovalMode(am)
 		}
 	})
 }
@@ -56,12 +56,14 @@ func (a *geminiAgent) syncSandboxConfig() error {
 	a.mu.RUnlock()
 
 	flag := sandboxFlagValue(sbx)
-	return writeWorkspaceSettings(workDir, func(s *geminiSettingsFile) {
-		s.Sandbox = flag
+	return writeWorkspaceSettings(workDir, func(s *SettingsSchemaJson) {
+		if flag != "" {
+			s.Tools.Sandbox = flag
+		}
 	})
 }
 
-func writeWorkspaceSettings(workDir string, mutateFn func(*geminiSettingsFile)) error {
+func writeWorkspaceSettings(workDir string, mutateFn func(*SettingsSchemaJson)) error {
 	settingsDir := filepath.Join(workDir, ".gemini")
 	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
 		return fmt.Errorf("gemini: mkdir %s: %w", settingsDir, err)
@@ -71,9 +73,6 @@ func writeWorkspaceSettings(workDir string, mutateFn func(*geminiSettingsFile)) 
 	settings, err := readSettingsFile(settingsPath)
 	if err != nil && !os.IsNotExist(err) {
 		return err
-	}
-	if settings.Hooks == nil {
-		settings.Hooks = map[string][]geminiHookMatcher{}
 	}
 
 	mutateFn(&settings)

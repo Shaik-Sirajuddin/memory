@@ -7,7 +7,7 @@
 | `gemini.go` | Connector identity, defaults, capabilities, model discovery, and hook manager orchestration. |
 | `commands.go` | Session lifecycle operations and prompt execution/stream command handling. |
 | `parser.go` | Stream-line normalization and hook input/output payload parsing helpers. |
-| `hooks.go` | Hook settings schema mapping, persistence, and conversion between stored and interface hook models. |
+| `hooks.go` | Generated Gemini settings schema persistence and conversion between stored hook definitions and interface hook models. |
 | `sandbox.go` | Sandbox state mapping and workspace config synchronization. |
 
 ## Runtime Control Flow
@@ -15,7 +15,7 @@
 | Phase | Flow |
 |---|---|
 | Initialization | Resolve Gemini binary, default work directory, and default model; publish connector info metadata. |
-| Session creation | Apply request overrides, persist session identity, validate CLI availability, sync workspace settings. |
+| Session creation | Apply request overrides, validate CLI availability, sync workspace settings, seed a prompt session, list Gemini sessions, and store the discovered session ID. |
 | Execution | Build command args from model, permission mode, prompt settings, and sandbox; run Gemini command. |
 | Streaming | Run Gemini with stream-compatible mode and normalize each line to contract stream events. |
 | Settings synchronization | Keep in-memory state and workspace/global settings aligned for model, permission mode, sandbox, and hooks. |

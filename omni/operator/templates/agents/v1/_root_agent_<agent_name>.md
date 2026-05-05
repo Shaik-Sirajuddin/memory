@@ -2,7 +2,14 @@
 AGENT_NAME = <agent_name>
 memory/<agent_name>/
 
-read memory/memory.yaml
+trigger >
+        search for [current_task] in agent-<agent_name>.md file
+        execute all [current_task]
+trigger is your invoke command
 
-to navigate project read agents_specification.md
+read memory/memory.yaml
 ```
+
+[sandbox]
+
+[current_task]

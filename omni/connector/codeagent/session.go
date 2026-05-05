@@ -20,6 +20,7 @@ type CreateSessionParams struct {
 	WorkDir        string
 	PermissionMode PermissionMode
 	SystemPrompt   string
+	SessionID      string
 	RunTime        *sandbox.SandboxRuntime
 }
 
@@ -32,6 +33,7 @@ type CreateSessionResult struct {
 type ResumeSessionParams struct {
 	ID          string
 	ForkSession bool
+	SessionID   string
 	RunTime     *sandbox.SandboxRuntime
 }
 
@@ -89,4 +91,15 @@ type GetSessionSandboxParams struct {
 
 type GetSessionSandboxResult struct {
 	Sandbox *sandbox.Config
+}
+
+// --- ExecInSession ---
+
+type ExecInSessionParams struct {
+	SessionID string
+	Prompt    string
+}
+
+type ExecInSessionResult struct {
+	SessionID string
 }

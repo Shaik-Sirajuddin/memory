@@ -4,7 +4,7 @@
 
 | Interface Area | Methods | Gemini Connector Behavior |
 |---|---|---|
-| Session lifecycle | Create, Resume, List, Delete, Stop | Create resolves work directory, model, permission mode, and local settings sync. Resume is currently not implemented. List and Delete return unsupported behavior consistently. Stop is a no-op for non-interactive execution. |
+| Session lifecycle | Create, Resume, List, Delete, Stop | Create resolves work directory, model, permission mode, syncs local settings, checks Gemini CLI reachability, seeds a prompt session, then returns the session ID discovered from `gemini --list-sessions`. Resume attaches to an interactive Gemini session. List and Delete use Gemini session commands. Stop terminates the active resumed process when present. |
 | Prompt execution | Exec, Stream | Exec runs Gemini with resolved arguments and returns final response text. Stream runs Gemini and emits normalized stream events (`text`, `tool_use`, `tool_result`, `stop`). |
 | Session config | GetSessionConfig | Returns current provider, model, permission mode, working directory, and system prompt. |
 | Sandbox | GetSessionSandbox, UpdateSessionSandbox | Keeps session sandbox in memory and synchronizes workspace Gemini settings after updates. |

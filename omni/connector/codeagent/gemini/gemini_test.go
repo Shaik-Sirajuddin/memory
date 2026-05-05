@@ -116,21 +116,22 @@ func TestParserBehavior(t *testing.T) {
 }
 
 func TestSettingsBehavior(t *testing.T) {
-	t.Run("ReadWriteShouldPreserveExtraFields", func(t *testing.T) {
+	t.Run("ReadWriteShouldUseGeneratedSettingsSchema", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, ".gemini", "settings.json")
 
-		input := `{"model":"m1","approvalMode":"plan","sandbox":"read-only","other":{"x":1}}`
+		input := `{"model":{"name":"m1"},"general":{"defaultApprovalMode":"plan"},"tools":{"sandbox":"read-only"}}`
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "Settings directory creation should succeed")
 		require.NoError(t, os.WriteFile(path, []byte(input), 0o644), "Writing initial settings should succeed")
 
 		f, err := readSettingsFile(path)
 		require.NoError(t, err, "Reading settings should succeed")
-		assert.Equal(t, "m1", f.Model, "Model value should be parsed from settings")
-		assert.Equal(t, "plan", f.ApprovalMode, "Approval mode should be parsed from settings")
-		assert.Equal(t, "read-only", f.Sandbox, "Sandbox value should be parsed from settings")
+		require.NotNil(t, f.Model.Name, "Model name should be parsed from generated settings")
+		assert.Equal(t, "m1", *f.Model.Name, "Model value should be parsed from settings")
+		assert.Equal(t, SettingsSchemaJsonGeneralDefaultApprovalMode("plan"), f.General.DefaultApprovalMode, "Approval mode should be parsed from settings")
+		assert.Equal(t, "read-only", f.Tools.Sandbox, "Sandbox value should be parsed from settings")
 
-		f.Model = "m2"
+		f.Model.Name = stringPtr("m2")
 		require.NoError(t, writeSettingsFile(path, f), "Writing updated settings should succeed")
 
 		out, err := os.ReadFile(path)
@@ -138,9 +139,9 @@ func TestSettingsBehavior(t *testing.T) {
 
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(out, &raw), "Updated settings JSON should parse successfully")
-		assert.Equal(t, "m2", raw["model"], "Updated model value should be persisted")
-		_, ok := raw["other"]
-		assert.True(t, ok, "Unknown settings fields should be preserved")
+		modelRaw, ok := raw["model"].(map[string]any)
+		require.True(t, ok, "Updated settings model should be an object")
+		assert.Equal(t, "m2", modelRaw["name"], "Updated model value should be persisted")
 	})
 
 	t.Run("WorkspaceSyncAndSandboxHelpers", func(t *testing.T) {
@@ -150,8 +151,9 @@ func TestSettingsBehavior(t *testing.T) {
 		settingsPath := filepath.Join(workDir, ".gemini", "settings.json")
 		f, err := readSettingsFile(settingsPath)
 		require.NoError(t, err, "Reading workspace settings should succeed")
-		assert.Equal(t, "gemini-2.5-pro", f.Model, "Workspace settings model should be synced")
-		assert.Equal(t, "auto_edit", f.ApprovalMode, "Workspace approval mode should be synced")
+		require.NotNil(t, f.Model.Name, "Workspace settings model should be set")
+		assert.Equal(t, "gemini-2.5-pro", *f.Model.Name, "Workspace settings model should be synced")
+		assert.Equal(t, SettingsSchemaJsonGeneralDefaultApprovalMode("auto_edit"), f.General.DefaultApprovalMode, "Workspace approval mode should be synced")
 
 		assert.Equal(t, "", sandboxFlagValue(nil), "Nil sandbox should map to empty flag")
 		assert.Equal(t, "read-only", sandboxFlagValue(&sandbox.Config{}), "Read-only sandbox should map to read-only flag")
@@ -186,9 +188,10 @@ func TestSettingsBehavior(t *testing.T) {
 		global := filepath.Join(home, ".gemini", "settings.json")
 		f, err := readSettingsFile(global)
 		require.NoError(t, err, "Reading persisted global settings should succeed")
-		assert.Equal(t, "new-model", f.Model, "Persisted global model should be updated")
-		assert.Equal(t, "auto_edit", f.ApprovalMode, "Persisted global approval mode should be updated")
-		assert.Equal(t, "read-only", f.Sandbox, "Persisted global sandbox should be updated")
+		require.NotNil(t, f.Model.Name, "Persisted global model should be set")
+		assert.Equal(t, "new-model", *f.Model.Name, "Persisted global model should be updated")
+		assert.Equal(t, SettingsSchemaJsonGeneralDefaultApprovalMode("auto_edit"), f.General.DefaultApprovalMode, "Persisted global approval mode should be updated")
+		assert.Equal(t, "read-only", f.Tools.Sandbox, "Persisted global sandbox should be updated")
 
 		cfg, err = agent.Defaults()
 		require.NoError(t, err, "Defaults lookup should succeed after persistence")
@@ -233,11 +236,14 @@ func TestHookBehavior(t *testing.T) {
 		assert.NotEmpty(t, f.Hooks, "Hook settings should contain synced hooks")
 
 		gotCmd := hookDataToDefinition(items[0])
-		assert.Equal(t, "command", gotCmd.Type, "Command hook definition type should be command")
-		assert.Equal(t, "echo", gotCmd.Command, "Command hook definition command should match source hook")
-		assert.Equal(t, "cmd-1", gotCmd.UID, "Command hook definition UID should match source hook")
+		require.NotNil(t, gotCmd.Type, "Command hook definition type should be set")
+		require.NotNil(t, gotCmd.Command, "Command hook definition command should be set")
+		require.NotNil(t, gotCmd.Name, "Command hook definition name should be set")
+		assert.Equal(t, "command", *gotCmd.Type, "Command hook definition type should be command")
+		assert.Equal(t, "echo a", *gotCmd.Command, "Command hook definition command should match source hook and args")
+		assert.Equal(t, "cmd-1", *gotCmd.Name, "Command hook definition UID should map to name")
 
-		back := hookDefinitionToData("web-1", hooks.PostPrompt, geminiHookDefinition{Type: "http", URL: u}, hooks.HookPath{WorkspaceDir: &workDir})
+		back := hookDefinitionToData("web-1", hooks.PostPrompt, HookDefinitionArrayElemHooksElem{Type: stringPtr("webhook"), Command: stringPtr(u)}, hooks.HookPath{WorkspaceDir: &workDir})
 		assert.Equal(t, hooks.Webhook, back.Info.Type, "Webhook round-trip should retain webhook type")
 		require.NotNil(t, back.Info.Url, "Webhook round-trip URL should be set")
 		assert.Equal(t, u, *back.Info.Url, "Webhook round-trip URL should match source URL")
@@ -323,18 +329,24 @@ func TestSessionCommandsBehavior(t *testing.T) {
 		})
 		require.NoError(t, err, "Create should succeed with a reachable gemini binary")
 		require.NotNil(t, result, "Create result should be returned")
-		assert.Equal(t, "session-create", result.ID, "Create result id should match explicit session id")
+		assert.Equal(t, "actual-session-create", result.ID, "Create result id should match discovered Gemini session id")
 		assert.Equal(t, "create-test", result.Name, "Create result name should match request name")
 
 		logLines := readLogLines(t, logPath)
 		require.NotEmpty(t, logLines, "Create should invoke the gemini binary")
-		assert.Contains(t, logLines[0], "--version", "Create should probe gemini version before creating a session")
+		assert.Subset(t, logLines, []string{
+			"--version",
+			"--help",
+			"-p reply-with-hi-session-create",
+			"--list-sessions",
+		}, "Create should probe auth, seed a prompt, and list sessions")
 
 		settingsPath := filepath.Join(workDir, ".gemini", "settings.json")
 		settings, err := readSettingsFile(settingsPath)
 		require.NoError(t, err, "Create should persist workspace settings")
-		assert.Equal(t, string(ModelGemini25Pro), settings.Model, "Create should persist the requested model")
-		assert.Equal(t, "auto_edit", settings.ApprovalMode, "Create should persist the mapped approval mode")
+		require.NotNil(t, settings.Model.Name, "Create should persist a model name")
+		assert.Equal(t, string(ModelGemini25Pro), *settings.Model.Name, "Create should persist the requested model")
+		assert.Equal(t, SettingsSchemaJsonGeneralDefaultApprovalMode("auto_edit"), settings.General.DefaultApprovalMode, "Create should persist the mapped approval mode")
 	})
 
 	t.Run("ResumeShouldAttachToShellAndStopCleanly", func(t *testing.T) {
@@ -396,6 +408,19 @@ func installFakeGeminiBinary(t *testing.T, dir, logPath string) {
 		"printf '%s\\n' \"$*\" >> \"" + logPath + "\"",
 		"if [[ \"${1:-}\" == \"--version\" ]]; then",
 		"  printf '0.37.0\\n'",
+		"  exit 0",
+		"fi",
+		"if [[ \"${1:-}\" == \"--help\" ]]; then",
+		"  printf 'Gemini CLI help\\n'",
+		"  exit 0",
+		"fi",
+		"if [[ \"${1:-}\" == \"-p\" ]]; then",
+		"  printf 'hi\\n'",
+		"  exit 0",
+		"fi",
+		"if [[ \"${1:-}\" == \"--list-sessions\" ]]; then",
+		"  printf 'available sessions for this project (1):\\n'",
+		"  printf '  1. reply-with-hi-session-create (Just now) [actual-session-create]\\n'",
 		"  exit 0",
 		"fi",
 		"if [[ \"${1:-}\" == \"--resume\" ]]; then",

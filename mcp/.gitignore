@@ -1,0 +1,4 @@
+.bin/
+.mcp.log
+.mcp.pid
+.temp

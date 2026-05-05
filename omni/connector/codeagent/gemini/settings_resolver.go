@@ -120,7 +120,7 @@ func (r *settingsResolver) read(path string) (*codeagent.Settings, error) {
 
 // save merges and persists neutral codeagent settings into Gemini settings.
 func (r *settingsResolver) save(path string, s *codeagent.Settings) error {
-	f := geminiSettingsFile{Hooks: map[string][]geminiHookMatcher{}}
+	var f SettingsSchemaJson
 	if existing, err := readSettingsFile(path); err == nil {
 		f = existing
 	}
@@ -129,12 +129,14 @@ func (r *settingsResolver) save(path string, s *codeagent.Settings) error {
 		return fmt.Errorf("gemini settings: nil settings")
 	}
 	if s.Config.Model.Model != "" {
-		f.Model = s.Config.Model.Model
+		f.Model.Name = stringPtr(s.Config.Model.Model)
 	}
 	if s.Config.PermissionMode != "" {
-		f.ApprovalMode = approvalModeFlag(s.Config.PermissionMode)
+		f.General.DefaultApprovalMode = SettingsSchemaJsonGeneralDefaultApprovalMode(approvalModeFlag(s.Config.PermissionMode))
 	}
-	f.Sandbox = sandboxFlagValue(s.Config.Sandbox)
+	if sandboxValue := sandboxFlagValue(s.Config.Sandbox); sandboxValue != "" {
+		f.Tools.Sandbox = sandboxValue
+	}
 
 	if err := writeSettingsFile(path, f); err != nil {
 		return fmt.Errorf("gemini settings: write %s: %w", path, err)
@@ -176,13 +178,18 @@ func (r *settingsResolver) pollLoop(idx int) {
 }
 
 // settingsFileToCodeagent maps provider-specific settings to neutral settings.
-func settingsFileToCodeagent(f geminiSettingsFile) *codeagent.Settings {
+func settingsFileToCodeagent(f SettingsSchemaJson) *codeagent.Settings {
+	model := ""
+	if f.Model.Name != nil {
+		model = *f.Model.Name
+	}
+	sandboxValue, _ := f.Tools.Sandbox.(string)
 	return &codeagent.Settings{
 		Provider: Gemini,
 		Config: codeagent.Config{
-			Model:          codeagent.Model{Provider: Gemini, Model: f.Model},
-			PermissionMode: permissionFromApprovalMode(firstNonEmpty(f.DefaultApprovalMode, f.ApprovalMode)),
-			Sandbox:        sandboxFromFlag(f.Sandbox),
+			Model:          codeagent.Model{Provider: Gemini, Model: model},
+			PermissionMode: permissionFromApprovalMode(string(f.General.DefaultApprovalMode)),
+			Sandbox:        sandboxFromFlag(sandboxValue),
 		},
 	}
 }

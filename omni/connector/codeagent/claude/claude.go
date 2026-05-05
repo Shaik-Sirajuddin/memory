@@ -71,6 +71,7 @@ type claudeAgent struct {
 	sbxRuntime      sandbox.SandboxRuntime
 	ptyClient       codeagent.PTYClient
 	masterPTY       *os.File
+	writeCh         chan []byte // serialised writer to PTY master; nil when no session
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
 }

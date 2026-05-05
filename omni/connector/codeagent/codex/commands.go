@@ -2,9 +2,12 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -15,10 +18,22 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"github.com/creack/pty"
 )
 
 const (
 	Codex codeagent.Provider = "codex"
+)
+
+// submitKey is the key sequence codex uses to submit a prompt in interactive mode.
+const submitKey = "\r"
+
+// interactiveStdin/Stdout/Stderr are the I/O streams used by Resume.
+// They are package-level vars so tests can substitute non-TTY writers.
+var (
+	interactiveStdin  io.Reader = nil // nil = open /dev/tty at runtime
+	interactiveStdout io.Writer = nil
+	interactiveStderr io.Writer = nil
 )
 
 // ============================================================
@@ -26,11 +41,12 @@ const (
 // ============================================================
 
 // Create prepares a codex CLI session.
-// Codex has no persistent server-side sessions; "creating" a session means
-// (1) applying the caller's params, (2) verifying the codex binary is reachable
-// and the user is authenticated, and (3) writing the resolved model into the
-// workspace .codex/config.toml so that any interactive `codex` invocation in
-// the same directory inherits the same defaults.
+// It verifies the binary and auth, then bootstraps a real codex session by
+// running codex briefly and parsing the session ID from its exit line:
+//
+//	"To continue this session, run codex resume <id>"
+//
+// The returned ID is the real codex session ID so that Resume can find it.
 func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateSessionResult, error) {
 	a.mu.Lock()
 	binPath := a.binPath
@@ -40,11 +56,6 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 	if p.Model != "" {
 		a.model = p.Model
 	}
-	id := p.ID
-	if id == "" {
-		id = generateID()
-	}
-	a.sessionID = id
 	if p.RunTime != nil {
 		a.sbxRuntime = *p.RunTime
 	}
@@ -69,19 +80,168 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 
 	// Persist model into .codex/config.toml so interactive sessions inherit it.
 	if syncErr := syncModelConfig(workDir, model); syncErr != nil {
-		// Non-fatal: log and continue — Exec/Stream always pass -m explicitly.
 		logger.Warn("Create: could not sync model to config", "err", syncErr)
 	}
 
-	logger.Info("Create: session ready", "id", id, "model", model, "workDir", workDir)
-	return &codeagent.CreateSessionResult{ID: id, Name: p.Name}, nil
+	// If the caller supplies a prior session ID, attach to it by verifying codex
+	// can resume it. This re-uses an existing conversation rather than starting fresh.
+	var sessionID string
+	if p.SessionID != "" {
+		logger.Info("Create: attaching to existing session via resume", "sessionID", p.SessionID)
+		if attachErr := verifySessionExists(workDir, binPath, p.SessionID); attachErr != nil {
+			logger.Warn("Create: supplied session ID not found in codex store, falling back to bootstrap", "sessionID", p.SessionID, "err", attachErr)
+		} else {
+			sessionID = p.SessionID
+			logger.Info("Create: attached to existing session", "sessionID", sessionID)
+		}
+	}
+
+	if sessionID == "" {
+		// Bootstrap a real codex session to obtain the actual codex session ID.
+		// Runs `codex exec . --json` and parses the thread_id from the first JSON line.
+		var bootstrapErr error
+		sessionID, bootstrapErr = bootstrapSession(workDir, binPath, model)
+		if bootstrapErr != nil || sessionID == "" {
+			// Non-fatal: fall back to the caller-supplied ID (or a generated one).
+			if p.ID != "" {
+				sessionID = p.ID
+			} else {
+				sessionID = generateID()
+			}
+			logger.Warn("Create: bootstrap session failed, using fallback id", "sessionID", sessionID, "err", bootstrapErr)
+		}
+	}
+
+	a.mu.Lock()
+	a.sessionID = sessionID
+	a.mu.Unlock()
+
+	logger.Info("Create: session ready", "id", sessionID, "model", model, "workDir", workDir)
+	return &codeagent.CreateSessionResult{ID: sessionID, Name: p.Name}, nil
+}
+
+// verifySessionExists runs `codex resume <id> --json` non-interactively to
+// confirm the session exists in codex's store. Returns nil if found.
+func verifySessionExists(workDir, binPath, sessionID string) error {
+	args := []string{"resume", sessionID, "--json", "-C", workDir}
+	logger.Debug("verifySessionExists: checking session", "sessionID", sessionID, "args", args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.Dir = workDir
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("verify session: start: %w", err)
+	}
+
+	// Give it 200 ms — if the session exists codex will start up; if not it
+	// exits immediately with an error message.
+	time.Sleep(200 * time.Millisecond)
+
+	output := buf.String()
+	if strings.Contains(output, "No saved session") || strings.Contains(output, "not found") {
+		cancel()
+		_ = cmd.Wait()
+		return fmt.Errorf("session %q not found in codex store", sessionID)
+	}
+
+	// Session appears valid — kill the process, we don't need it running yet.
+	cancel()
+	_ = cmd.Wait()
+	return nil
+}
+
+// bootstrapSession runs `codex exec "." --json` briefly to register a real
+// codex session and capture its thread_id from the first JSON line:
+//
+//	{"type":"thread.started","thread_id":"<id>"}
+//
+// The process is killed as soon as the thread_id is found so we don't wait
+// for the full exec to finish.
+func bootstrapSession(workDir, binPath, model string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	// No -m flag here: we only need the thread_id, and some models (e.g. o4-mini)
+	// are unsupported for certain account types and would cause codex to exit
+	// before emitting the thread.started line.
+	args := []string{"exec", ".", "--json", "-C", workDir}
+
+	logger.Info("bootstrapSession: running command", "bin", binPath, "args", args)
+
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.Dir = workDir
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("bootstrap: start: %w", err)
+	}
+
+	// Poll output until we see the thread.started line or timeout.
+	id := ""
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		id = parseBootstrapSessionID(buf.String())
+		if id != "" {
+			break
+		}
+	}
+
+	// Kill the exec process — we have the ID, no need to wait for full execution.
+	cancel()
+	_ = cmd.Wait()
+
+	logger.Debug("bootstrapSession: completed", "sessionID", id, "outputLen", buf.Len())
+	return id, nil
+}
+
+// parseBootstrapSessionID reads the thread_id from codex --json exec output:
+//
+//	{"type":"thread.started","thread_id":"<id>"}
+func parseBootstrapSessionID(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, `"thread.started"`) && strings.Contains(line, `"thread_id"`) {
+			// Fast path: extract value between `"thread_id":"` and next `"`
+			const key = `"thread_id":"`
+			idx := strings.Index(line, key)
+			if idx == -1 {
+				continue
+			}
+			rest := line[idx+len(key):]
+			end := strings.Index(rest, `"`)
+			if end > 0 {
+				return rest[:end]
+			}
+		}
+	}
+	return ""
 }
 
 func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
+	// Block if a PTY session is already live.
+	a.mu.RLock()
+	live := a.masterPTY != nil
+	a.mu.RUnlock()
+	if live {
+		return nil, errors.New("codex: PTY session already active; stop it before resuming")
+	}
+
 	a.mu.RLock()
 	binPath := a.binPath
 	workDir := a.workDir
 	rt := a.sbxRuntime
+	ptyClient := a.ptyClient
 	a.mu.RUnlock()
 	if p.RunTime != nil {
 		rt = *p.RunTime
@@ -99,6 +259,8 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 		args = append(args, "--last")
 	}
 
+	logger.Info("Resume: running command", "bin", binPath, "args", args)
+
 	if rt != nil {
 		if err := rt.Command(binPath, args); err != nil {
 			return nil, fmt.Errorf("codex: resume: sandbox command: %w", err)
@@ -112,25 +274,133 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
 	}
 
-	cmd := exec.Command(binPath, args...)
-	cmd.Dir = workDir
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("codex: resume: start process: %w", err)
-	}
-
-	pid := fmt.Sprintf("%d", cmd.Process.Pid)
 	resolvedSessionID := p.ID
 	if resolvedSessionID == "" {
 		resolvedSessionID = "last"
 	}
 
+	// PTY mode: start under pty.Start so the caller gets the PID immediately.
+	if ptyClient != nil {
+		cmd := exec.Command(binPath, args...)
+		cmd.Dir = workDir
+		master, err := pty.Start(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("codex: resume: pty start: %w", err)
+		}
+		pid := fmt.Sprintf("%d", cmd.Process.Pid)
+		a.mu.Lock()
+		a.masterPTY = master
+		a.activeCmd = cmd
+		a.mu.Unlock()
+		go func() {
+			_ = cmd.Wait()
+			a.mu.Lock()
+			a.masterPTY = nil
+			a.mu.Unlock()
+		}()
+		logger.Info("Resume: PTY session started", "pid", pid, "sessionID", resolvedSessionID)
+		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
+	}
+
+	pid, _ := a.attachAndRun(binPath, workDir, args)
+	// TODO: re-enable new-session fallback once bootstrap reliably returns a real session ID
+	// if runErr != nil {
+	// 	logger.Warn("Resume: session not found, falling back to new session", "sessionID", resolvedSessionID, "err", runErr)
+	// 	newArgs := []string{"-C", workDir}
+	// 	logger.Info("Resume: running command", "bin", binPath, "args", newArgs)
+	// 	pid, _ = a.attachAndRun(binPath, workDir, newArgs)
+	// 	resolvedSessionID = "new"
+	// }
+
+	return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
+}
+
+// attachAndRun starts binPath with args attached to the terminal and blocks
+// until the process exits. Returns the pid string and the exit error (nil = clean exit).
+func (a *codexAgent) attachAndRun(binPath, workDir string, args []string) (pid string, err error) {
+	cmd := exec.Command(binPath, args...)
+	cmd.Dir = workDir
+
+	// Prefer injectable streams (set by tests). In production, open /dev/tty
+	// directly so the child gets a proper controlling terminal for raw mode.
+	// Pipe-like fds from os.Stdin/Stdout cause EIO on setRawMode.
+	if interactiveStdin != nil || interactiveStdout != nil || interactiveStderr != nil {
+		cmd.Stdin = interactiveStdin
+		cmd.Stdout = interactiveStdout
+		cmd.Stderr = interactiveStderr
+	} else {
+		tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		if ttyErr == nil {
+			defer tty.Close()
+			cmd.Stdin = tty
+			cmd.Stdout = tty
+			cmd.Stderr = tty
+		} else {
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		}
+	}
+
+	if startErr := cmd.Start(); startErr != nil {
+		return "", fmt.Errorf("codex: start process: %w", startErr)
+	}
+
+	pid = fmt.Sprintf("%d", cmd.Process.Pid)
+
 	a.mu.Lock()
 	a.activeCmd = cmd
-	a.sessionID = resolvedSessionID
 	a.mu.Unlock()
 
-	logger.Info("Resume: interactive session started", "pid", pid, "sessionID", resolvedSessionID, "fork", p.ForkSession)
-	return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
+	logger.Info("Resume: interactive session started", "pid", pid, "args", args)
+
+	// Block until the interactive session ends. This keeps the tty fd open
+	// for the full duration and prevents the caller from racing with the child.
+	err = cmd.Wait()
+	return pid, err
+}
+
+// ============================================================
+// ExecInSession
+// ============================================================
+
+// ExecInSession writes a prompt into an active interactive PTY session managed
+// by the PTY daemon. It is fire-and-forget: it returns immediately without
+// waiting for a response.
+//
+// Payload: ctrlU + pasteStart + prompt + pasteEnd + submitKey
+func (a *codexAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
+	a.mu.RLock()
+	master := a.masterPTY
+	client := a.ptyClient
+	agentID := a.sessionID
+	a.mu.RUnlock()
+
+	sid := p.SessionID
+	if sid == "" {
+		sid = agentID
+	}
+	if sid == "" {
+		return nil, fmt.Errorf("codex: ExecInSession: no session ID")
+	}
+
+	payload := []byte("\x15\x1b[200~" + p.Prompt + "\x1b[201~" + submitKey)
+
+	switch {
+	case master != nil:
+		if _, err := master.Write(payload); err != nil {
+			return nil, fmt.Errorf("codex: ExecInSession: write to PTY: %w", err)
+		}
+	case client != nil:
+		if err := client.Pipe(agentID, sid, payload); err != nil {
+			return nil, fmt.Errorf("codex: ExecInSession: session not live: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("codex: ExecInSession: no active PTY session")
+	}
+
+	logger.Info("ExecInSession: prompt sent", "sessionID", sid, "promptLen", len(p.Prompt))
+	return &codeagent.ExecInSessionResult{SessionID: sid}, nil
 }
 
 func (a *codexAgent) List(p codeagent.ListSessionsParams) (*codeagent.ListSessionsResult, error) {
@@ -364,7 +634,10 @@ func (a *codexAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult, 
 // ============================================================
 
 func buildExecArgs(prompt, model string, format codeagent.OutputFormat, maxTurns int, sbx *sandbox.Config) []string {
-	args := []string{"exec", prompt, "-m", model}
+	args := []string{"exec", prompt}
+	if model != "" {
+		args = append(args, "-m", model)
+	}
 	if format == codeagent.OutputFormatJSON || format == codeagent.OutputFormatStreamJSON {
 		args = append(args, "--json")
 	}
@@ -378,7 +651,10 @@ func buildExecArgs(prompt, model string, format codeagent.OutputFormat, maxTurns
 }
 
 func buildStreamArgs(prompt, model string, maxTurns int, sbx *sandbox.Config) []string {
-	args := []string{"exec", prompt, "-m", model, "--json"}
+	args := []string{"exec", prompt, "--json"}
+	if model != "" {
+		args = append(args, "-m", model)
+	}
 	if maxTurns > 0 {
 		args = append(args, fmt.Sprintf("--max-turns=%d", maxTurns))
 	}
