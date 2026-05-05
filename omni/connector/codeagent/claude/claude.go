@@ -69,14 +69,16 @@ type claudeAgent struct {
 	sessionID       string
 	sbx             *sandbox.Config
 	sbxRuntime      sandbox.SandboxRuntime
-	ptyClient       PTYClient
+	ptyClient       codeagent.PTYClient
+	masterPTY       *os.File
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
 }
 
 // New returns a CodeAgent backed by the local claude CLI binary.
 // workDir defaults to the process working directory; model defaults to DefaultModel.
-func New(workDir, model string) (codeagent.CodeAgent, error) {
+// c is the PTY daemon client used by ExecInSession; pass nil to disable PTY support.
+func New(workDir, model string, c codeagent.PTYClient) (codeagent.CodeAgent, error) {
 	binPath, err := lookPath("claude")
 	if err != nil {
 		return nil, fmt.Errorf("claude: binary not found in PATH: %w", err)
@@ -97,19 +99,21 @@ func New(workDir, model string) (codeagent.CodeAgent, error) {
 	ver = strings.TrimSpace(ver)
 	logger.Info("claude agent initialised", "workDir", workDir, "model", model, "version", ver)
 
-	return &claudeAgent{
+	a := &claudeAgent{
 		ClaudeParser: &ClaudeParser{},
 		resolver:     settings.New(Claude),
 		workDir:      workDir,
 		model:        model,
 		permMode:     codeagent.PermissionDefault,
+		ptyClient:    c,
 		info:         codeagent.CodeAgentInfo{Provider: Claude, Name: "claude", Version: ver},
-	}, nil
+	}
+	return a, nil
 }
 
 // SetPTYClient wires the PTY daemon client used by ExecInSession.
 // Call this after New() when interactive PTY support is needed.
-func (a *claudeAgent) SetPTYClient(c PTYClient) {
+func (a *claudeAgent) SetPTYClient(c codeagent.PTYClient) {
 	a.mu.Lock()
 	a.ptyClient = c
 	a.mu.Unlock()

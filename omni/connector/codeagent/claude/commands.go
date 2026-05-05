@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"github.com/creack/pty"
 )
 
 const (
@@ -24,19 +26,6 @@ const (
 	pasteStart = "\x1b[200~"
 	pasteEnd   = "\x1b[201~"
 )
-
-// PTYClient is the minimal PTY daemon interface used by ExecInSession.
-type PTYClient interface {
-	Pipe(agentID, sessionID string, data []byte) error
-	List() ([]PTYInfo, error)
-}
-
-// PTYInfo describes a single active terminal returned by PTYClient.List.
-type PTYInfo struct {
-	AgentID   string
-	SessionID string
-	Status    string
-}
 
 // interactiveStdin/Stdout/Stderr are the I/O streams used by Resume.
 // They are package-level vars so tests can substitute non-TTY writers.
@@ -132,14 +121,30 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	return &codeagent.CreateSessionResult{ID: id, Name: p.Name}, nil
 }
 
+// ptyStoper is satisfied by PTY daemon clients that can notify the daemon
+// when a session terminates. It is optional — Pipe-only clients are fine.
+type ptyStoper interface {
+	Stop(agentID, sessionID string) error
+}
+
 // Resume launches an interactive claude session via `claude -r <id>`.
 func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
+	// Block if a PTY session is already active.
+	a.mu.RLock()
+	live := a.masterPTY != nil
+	a.mu.RUnlock()
+	if live {
+		return nil, errors.New("claude: PTY session already active; stop it before resuming")
+	}
+
 	a.mu.Lock()
 	workDir := a.workDir
 	if p.RunTime != nil {
 		a.sbxRuntime = *p.RunTime
 	}
 	rt := a.sbxRuntime
+	client := a.ptyClient
+	agentID := a.sessionID
 	a.mu.Unlock()
 
 	// Prefer the explicit Claude session ID when provided; fall back to p.ID.
@@ -161,11 +166,39 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		logger.Info("Resume: interactive sandbox session completed", "pid", pid, "sessionID", resumeID)
 		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resumeID}, nil
 	}
+
 	cmd := localCommand(workDir, "claude", args...)
 
-	// Prefer injectable streams (set by tests). In production, open /dev/tty
-	// directly so the child gets a proper controlling terminal for raw mode.
-	// Pipe-like fds from os.Stdin/Stdout cause EIO on setRawMode.
+	// PTY mode: start under a pseudo-terminal so ExecInSession can write directly
+	// to the master fd without going through the daemon's HTTP layer.
+	if client != nil {
+		master, err := pty.Start(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("claude: resume: pty start: %w", err)
+		}
+		a.mu.Lock()
+		a.masterPTY = master
+		a.mu.Unlock()
+
+		pid := strconv.Itoa(cmd.Process.Pid)
+		logger.Info("Resume: PTY session started", "pid", pid, "sessionID", resumeID)
+
+		go func() {
+			_ = cmd.Wait()
+			a.mu.Lock()
+			a.masterPTY = nil
+			a.mu.Unlock()
+			if s, ok := client.(ptyStoper); ok {
+				_ = s.Stop(agentID, resumeID)
+			}
+			logger.Debug("Resume: PTY session terminated", "sessionID", resumeID)
+		}()
+
+		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resumeID}, nil
+	}
+
+	// Blocking mode: open /dev/tty directly so the child gets a proper
+	// controlling terminal for raw mode. Pipe-like fds cause EIO on setRawMode.
 	if interactiveStdin != nil || interactiveStdout != nil || interactiveStderr != nil {
 		cmd.Stdin = interactiveStdin
 		cmd.Stdout = interactiveStdout
@@ -223,36 +256,28 @@ func (a *claudeAgent) Stop() {
 // returns immediately without waiting for a response.
 func (a *claudeAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
 	a.mu.RLock()
+	master := a.masterPTY
 	client := a.ptyClient
 	agentID := a.sessionID
 	a.mu.RUnlock()
-
-	if client == nil {
-		return nil, fmt.Errorf("claude: ExecInSession: no PTY daemon client configured")
-	}
-
-	infos, err := client.List()
-	if err != nil {
-		return nil, fmt.Errorf("claude: ExecInSession: list sessions: %w", err)
-	}
-	active := false
-	for _, info := range infos {
-		if info.SessionID == p.SessionID && info.Status == "active" {
-			active = true
-			break
-		}
-	}
-	if !active {
-		return nil, fmt.Errorf("claude: ExecInSession: session not live")
-	}
 
 	// Bracketed-paste ensures multi-line prompts are sent atomically before
 	// the submit key triggers execution.
 	payload := []byte(ctrlU + pasteStart + p.Prompt + pasteEnd + submitKey)
 
-	if err := client.Pipe(agentID, p.SessionID, payload); err != nil {
-		return nil, fmt.Errorf("claude: ExecInSession: pipe: %w", err)
+	if master != nil {
+		// Direct write to the PTY master — no HTTP round-trip needed.
+		if _, err := master.Write(payload); err != nil {
+			return nil, fmt.Errorf("claude: ExecInSession: write to PTY: %w", err)
+		}
+	} else if client != nil {
+		if err := client.Pipe(agentID, p.SessionID, payload); err != nil {
+			return nil, fmt.Errorf("claude: ExecInSession: session not live: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("claude: ExecInSession: no active PTY session")
 	}
+
 	logger.Debug("ExecInSession: prompt piped", "sessionID", p.SessionID, "promptLen", len(p.Prompt))
 	return &codeagent.ExecInSessionResult{SessionID: p.SessionID}, nil
 }

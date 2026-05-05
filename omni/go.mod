@@ -6,6 +6,7 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/atombender/go-jsonschema v0.23.0 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
