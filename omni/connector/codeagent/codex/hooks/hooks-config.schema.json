@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "codex-hooks-config",
+  "description": "Schema for hooks section in OpenAI Codex settings. Config path: ~/.codex/config.yaml (global) or .codex/config.yaml (workspace)",
+  "type": "object",
+  "properties": {
+    "hooks": {
+      "type": "object",
+      "description": "Map of hook event names to arrays of hook matchers",
+      "properties": {
+        "PreToolUse": { "$ref": "#/definitions/HookMatcherList" },
+        "PostToolUse": { "$ref": "#/definitions/HookMatcherList" },
+        "SessionStart": { "$ref": "#/definitions/HookMatcherList" },
+        "UserPromptSubmit": { "$ref": "#/definitions/HookMatcherList" },
+        "Stop": { "$ref": "#/definitions/HookMatcherList" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definitions": {
+    "HookMatcherList": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/HookMatcher" }
+    },
+    "HookMatcher": {
+      "type": "object",
+      "properties": {
+        "matcher": {
+          "type": "string",
+          "description": "Regex pattern to match tool_name or other event-specific field"
+        },
+        "hooks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/HookDefinition" }
+        }
+      },
+      "required": ["hooks"]
+    },
+    "HookDefinition": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": ["command"],
+          "type": "string"
+        },
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Timeout in seconds"
+        }
+      },
+      "required": ["type", "command"]
+    },
+    "PermissionMode": {
+      "enum": ["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"],
+      "type": "string"
+    },
+    "HookEventNameWire": {
+      "enum": ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop"],
+      "type": "string",
+      "description": "Codex-supported hook event names"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# Default agent configuration — applied on CreateAgent.
+# sandbox is set to bypassPermissions to allow full execution of bash commands.
+
+# AI model used for new sessions when no provider-specific default is set.
+model: gemini-2.5-flash
+
+# sandbox / permission mode.
+# bypassPermissions — full execution of bash and tool commands, no approval prompts.
+# Override to "acceptEdits" or "default" for interactive / restricted agents.
+sandbox: bypassPermissions
+
+# Maximum number of agentic turns per prompt execution.
+maxTurns: 50
+
+# Per-invocation timeout in seconds (hooks and tool calls).
+timeout: 60
+
+# Log user prompts in session output.
+logPrompts: false
+
+# Environment variables injected into the agent process.
+# env:
+#   KEY: value

@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "notification.command.input",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "session_id": { "type": "string" },
+    "transcript_path": { "type": "string" },
+    "cwd": { "type": "string" },
+    "hook_event_name": { "const": "Notification", "type": "string" },
+    "timestamp": { "type": "string" },
+    "notification_type": {
+      "enum": ["ToolPermission"],
+      "type": "string"
+    },
+    "message": { "type": "string", "description": "Alert summary" },
+    "details": { "type": "object", "description": "Alert-specific JSON metadata" }
+  },
+  "required": ["session_id", "transcript_path", "cwd", "hook_event_name", "timestamp", "notification_type", "message"]
+}

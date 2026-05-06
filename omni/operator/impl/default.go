@@ -1,0 +1,1199 @@
+package impl
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Shaik-Sirajuddin/memory/config"
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude"
+	claudesettings "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/settings"
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex"
+	codexsettings "github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex/settings"
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/gemini"
+	"github.com/Shaik-Sirajuddin/memory/omniagent"
+	operator "github.com/Shaik-Sirajuddin/memory/operator"
+	"github.com/Shaik-Sirajuddin/memory/operator/impl/defaults"
+	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
+	agentstore "github.com/Shaik-Sirajuddin/memory/store/agent"
+	"github.com/Shaik-Sirajuddin/memory/store/codesession"
+	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
+	"github.com/google/uuid"
+)
+
+// Provider constants mirror those in each connector package, defined here to
+// avoid importing packages that currently have build errors.
+const (
+	providerClaude codeagent.Provider = "claude"
+	providerCodex  codeagent.Provider = "codex"
+	providerGemini codeagent.Provider = "gemini"
+)
+
+// DefaultOperator implements [Operator].
+// agentMemory is a pluggable module: non-nil enables memory operations;
+// nil disables them (e.g. when config.Features.Memory is false).
+type DefaultOperator struct {
+	config               config.OmniConfig
+	store                operatorstore.OperatorStore
+	agentStore           agentstore.AgentStore
+	sessionStore         codesession.CodeSessionStore
+	agentMemory          operator.AgentMemory
+	provisioner          sandbox.SandboxProvisioner // nil = sandboxing disabled
+	ptyDaemon            ptyDaemonClient
+	newCodeAgent         func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error)
+	newCodeAgentForAgent func(agentID string, provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error)
+}
+
+type ptyDaemonClient interface {
+	Pipe(agentID, sessionID string, data []byte) error
+	Register(agentID, sessionID, processID string) error
+	List() ([]*PTYTerminalInfo, error)
+}
+
+type PTYTerminalInfo struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+}
+
+type httpPTYDaemonClient struct {
+	socketPath string
+	httpClient *http.Client
+}
+
+type codexPTYAdapter struct {
+	agentID string
+	inner   ptyDaemonClient
+}
+
+func (a *codexPTYAdapter) Pipe(_ string, sessionID string, data []byte) error {
+	if a == nil || a.inner == nil {
+		return fmt.Errorf("operator: pty daemon client is not configured")
+	}
+	return a.inner.Pipe(a.agentID, sessionID, data)
+}
+
+func newPTYDaemonClient() *httpPTYDaemonClient {
+	socketPath := os.Getenv("PTYDAEMON_SOCKET")
+	if socketPath == "" {
+		socketPath = "/tmp/ptydaemon.sock"
+	}
+	return &httpPTYDaemonClient{
+		socketPath: socketPath,
+		httpClient: &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, "unix", socketPath)
+				},
+			},
+		},
+	}
+}
+
+func (c *httpPTYDaemonClient) Pipe(agentID, sessionID string, data []byte) error {
+	if c == nil {
+		return fmt.Errorf("operator: pty daemon client is not configured")
+	}
+	body, err := json.Marshal(struct {
+		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
+		Data      []byte `json:"data"`
+	}{
+		AgentID:   agentID,
+		SessionID: sessionID,
+		Data:      data,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://ptydaemon/pipe", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("operator: pty daemon pipe %s: %w", c.socketPath, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("operator: pty daemon pipe: %s", resp.Status)
+	}
+	return nil
+}
+
+func (c *httpPTYDaemonClient) List() ([]*PTYTerminalInfo, error) {
+	if c == nil {
+		return nil, fmt.Errorf("operator: pty daemon client is not configured")
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://ptydaemon/list", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("operator: pty daemon list %s: %w", c.socketPath, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("operator: pty daemon list: %s", resp.Status)
+	}
+	var infos []*PTYTerminalInfo
+	if err := json.NewDecoder(resp.Body).Decode(&infos); err != nil {
+		return nil, fmt.Errorf("operator: pty daemon list decode: %w", err)
+	}
+	return infos, nil
+}
+
+func (c *httpPTYDaemonClient) Register(agentID, sessionID, processID string) error {
+	if c == nil || strings.TrimSpace(agentID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(processID) == "" {
+		return nil
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(processID))
+	if err != nil {
+		return fmt.Errorf("operator: register: invalid pid %q: %w", processID, err)
+	}
+	body, err := json.Marshal(struct {
+		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
+		PID       int    `json:"pid"`
+		SubmitKey string `json:"submit_key"`
+	}{
+		AgentID:   agentID,
+		SessionID: sessionID,
+		PID:       pid,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://ptydaemon/adopt", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("operator: pty daemon adopt: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("operator: pty daemon adopt: %s", resp.Status)
+	}
+	return nil
+}
+
+// SwitchProvider implements [Operator].
+// SwitchProvider when switching between models , if a non fill session exists matching provider , agent , session is reused , override by CleanStart
+func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) error {
+	if strings.TrimSpace(params.ID) == "" {
+		return fmt.Errorf("operator: agent id is required")
+	}
+	if params.Provider == "" {
+		return fmt.Errorf("operator: provider is required")
+	}
+	if o.sessionStore == nil {
+		return fmt.Errorf("operator: session store is not configured")
+	}
+	agent, err := o.store.GetAgent(params.ID)
+	if err != nil {
+		return fmt.Errorf("operator: switch provider: load agent %q: %w", params.ID, err)
+	}
+	sessions, err := o.sessionStore.ListSessions(agent.ID, nil)
+	if err != nil {
+		return fmt.Errorf("operator: switch provider: list sessions for agent %q: %w", agent.ID, err)
+	}
+
+	target := (*omniagent.CodeSession)(nil)
+	if !params.CleanStart {
+		for _, s := range sessions {
+			if s != nil && s.Model != nil && s.Model.Provider == params.Provider {
+				target = s
+				break
+			}
+		}
+	}
+
+	if target == nil {
+		model := operator.DefaultModel
+		ca, err := o.createCodeAgent(agent, params.Provider, string(agent.WorkspaceDir), model)
+		if err != nil {
+			return fmt.Errorf("operator: switch provider: init code agent: %w", err)
+		}
+
+		var sbxRuntime *sandbox.SandboxRuntime
+		if o.provisioner != nil {
+			workDir := string(agent.WorkspaceDir)
+			cfg := defaults.SandboxConfig(params.Provider, workDir)
+			configDir := sandboxConfigDir(workDir, agent.Name)
+			rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
+				ID:        agent.ID,
+				ConfigDir: configDir,
+				Config:    cfg,
+			})
+			if sbxErr == nil {
+				sbxRuntime = &rt
+			}
+		}
+
+		requestedSessionID := strings.TrimSpace(params.SessionID)
+		newID := requestedSessionID
+		if newID == "" {
+			newID = uuid.NewString()
+		}
+		createResult, err := ca.Create(codeagent.CreateSessionParams{
+			ID:        newID,
+			Name:      agent.Name,
+			Model:     model,
+			WorkDir:   string(agent.WorkspaceDir),
+			SessionID: requestedSessionID,
+			RunTime:   sbxRuntime,
+		})
+		if err != nil {
+			return fmt.Errorf("operator: switch provider: create session for agent %q: %w", agent.ID, err)
+		}
+		if createResult != nil && createResult.ID != "" {
+			newID = createResult.ID
+		}
+		target = &omniagent.CodeSession{
+			Id:       newID,
+			Model:    &codeagent.Model{Provider: params.Provider, Model: model},
+			IsActive: true,
+		}
+		if err := o.sessionStore.CreateSession(agent.ID, target); err != nil {
+			return fmt.Errorf("operator: switch provider: persist new session: %w", err)
+		}
+	}
+
+	for _, s := range sessions {
+		if s == nil || s.Id == "" || s.Id == target.Id {
+			continue
+		}
+		if s.IsActive {
+			s.IsActive = false
+			if err := o.sessionStore.UpdateSession(agent.ID, s); err != nil {
+				return fmt.Errorf("operator: switch provider: deactivate session %q: %w", s.Id, err)
+			}
+		}
+	}
+	target.IsActive = true
+	if err := o.sessionStore.UpdateSession(agent.ID, target); err != nil {
+		return fmt.Errorf("operator: switch provider: activate session %q: %w", target.Id, err)
+	}
+
+	model := operator.DefaultModel
+	if target.Model != nil && target.Model.Model != "" {
+		model = target.Model.Model
+	}
+	ca, err := o.createCodeAgent(agent, params.Provider, string(agent.WorkspaceDir), model)
+	if err != nil {
+		return fmt.Errorf("operator: switch provider: init runtime for resume: %w", err)
+	}
+	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: target.Id}); err != nil {
+		return fmt.Errorf("operator: switch provider: resume session %q: %w", target.Id, err)
+	}
+	return nil
+}
+
+func (o *DefaultOperator) ExecInSession(params operator.ExecInSessionParams) (*operator.ExecInSessionResult, error) {
+	agent, ca, err := o.codeAgentForAgentID(params.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	sessionID := strings.TrimSpace(params.SessionID)
+	if sessionID == "" {
+		if o.sessionStore == nil {
+			return nil, fmt.Errorf("operator: session store is not configured")
+		}
+		session, err := o.sessionStore.GetSession(agent.ID)
+		if err != nil {
+			return nil, fmt.Errorf("operator: active session for agent %q: %w", agent.ID, err)
+		}
+		if session == nil || strings.TrimSpace(session.Id) == "" {
+			return nil, fmt.Errorf("operator: active session not found for agent %q", agent.ID)
+		}
+		sessionID = strings.TrimSpace(session.Id)
+	}
+	result, err := ca.ExecInSession(codeagent.ExecInSessionParams{
+		SessionID: sessionID,
+		Prompt:    params.Prompt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("operator: exec in session: %w", err)
+	}
+	if result != nil && result.SessionID != "" {
+		sessionID = result.SessionID
+	}
+	return &operator.ExecInSessionResult{SessionID: sessionID}, nil
+}
+
+func (o *DefaultOperator) Pipe(params operator.PipeParams) error {
+	if strings.TrimSpace(params.SessionID) == "" {
+		return fmt.Errorf("session_id required")
+	}
+	agent, _, err := o.codeAgentForAgentID(params.AgentID)
+	if err != nil {
+		return err
+	}
+	if o.ptyDaemon == nil {
+		return fmt.Errorf("operator: pty daemon client is not configured")
+	}
+	if err := o.ptyDaemon.Pipe(agent.ID, params.SessionID, params.Data); err != nil {
+		return fmt.Errorf("operator: pipe session: %w", err)
+	}
+	return nil
+}
+
+func (o *DefaultOperator) codeAgentForAgentID(agentID string) (*omniagent.AgentInfo, codeagent.CodeAgent, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil, nil, fmt.Errorf("operator: agent id is required")
+	}
+	agent, err := o.resolveAgentRef(agentID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("operator: load agent %q: %w", agentID, err)
+	}
+
+	provider := codeagent.Provider(operator.DefaultProvider)
+	model := operator.DefaultModel
+	if o.sessionStore != nil {
+		if session, sErr := o.sessionStore.GetSession(agent.ID); sErr == nil && session != nil && session.Model != nil {
+			if session.Model.Provider != "" {
+				provider = session.Model.Provider
+			}
+			if session.Model.Model != "" {
+				model = session.Model.Model
+			}
+		}
+	}
+	ca, err := o.createCodeAgent(agent, provider, string(agent.WorkspaceDir), model)
+	if err != nil {
+		return nil, nil, fmt.Errorf("operator: init code agent runtime: %w", err)
+	}
+	return agent, ca, nil
+}
+
+func (o *DefaultOperator) createCodeAgent(agent *omniagent.AgentInfo, provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+	if agent != nil && o.newCodeAgentForAgent != nil {
+		return o.newCodeAgentForAgent(agent.ID, provider, workDir, model)
+	}
+	if o.newCodeAgent != nil {
+		return o.newCodeAgent(provider, workDir, model)
+	}
+	return nil, fmt.Errorf("operator: code agent factory is not configured")
+}
+
+func (o *DefaultOperator) resolveAgentRef(ref string) (*omniagent.AgentInfo, error) {
+	agent, err := o.store.GetAgent(ref)
+	if err == nil {
+		return agent, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	workspace, wErr := o.resolveWorkspace("")
+	if wErr != nil {
+		return nil, wErr
+	}
+	agents, listErr := o.store.ListAgentsByDir(workspace)
+	if listErr != nil {
+		return nil, listErr
+	}
+	name := sanitizeAgentName(ref)
+	for _, candidate := range agents {
+		if candidate != nil && candidate.Name == name {
+			return candidate, nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (o *DefaultOperator) registerPTYSession(agentID, sessionID string, result *codeagent.ResumeSessionResult) {
+	if o.ptyDaemon == nil {
+		logger.Debug("ResumeAgent: pty daemon registration skipped", "agentID", agentID, "sessionID", sessionID, "reason", "pty daemon client is not configured")
+		return
+	}
+	if result == nil {
+		logger.Debug("ResumeAgent: pty daemon registration skipped", "agentID", agentID, "sessionID", sessionID, "reason", "resume result is nil")
+		return
+	}
+	if result.ProcessID == "" {
+		logger.Debug("ResumeAgent: pty daemon registration skipped", "agentID", agentID, "sessionID", sessionID, "resultSessionID", result.SessionID, "reason", "process id is empty")
+		return
+	}
+	if result.SessionID != "" {
+		sessionID = result.SessionID
+	}
+	logger.Debug("ResumeAgent: registering pty session", "agentID", agentID, "sessionID", sessionID, "pid", result.ProcessID)
+	if err := o.ptyDaemon.Register(agentID, sessionID, result.ProcessID); err != nil {
+		logger.Warn("ResumeAgent: pty daemon registration failed", "agentID", agentID, "sessionID", sessionID, "pid", result.ProcessID, "err", err)
+		return
+	}
+	logger.Debug("ResumeAgent: pty daemon registration completed", "agentID", agentID, "sessionID", sessionID, "pid", result.ProcessID)
+}
+
+// ResumeAgent implements [Operator].
+func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
+	workspace, err := o.resolveWorkspace(params.Workspace)
+	if err != nil {
+		logger.Error("ResumeAgent: workspace resolution failed", "workspace", params.Workspace, "err", err)
+		return err
+	}
+	name := sanitizeAgentName(params.Name)
+	if name == "" {
+		logger.Error("ResumeAgent: validation failed", "err", "agent name is required")
+		return fmt.Errorf("operator: agent name is required")
+	}
+
+	agents, err := o.store.ListAgentsByDir(workspace)
+	if err != nil {
+		logger.Error("ResumeAgent: list agents failed", "workspace", workspace, "err", err)
+		return err
+	}
+
+	var agent *omniagent.AgentInfo
+	for _, item := range agents {
+		if item.Name == name {
+			agent = item
+			break
+		}
+	}
+	if agent == nil {
+		if params.InitIfMissing {
+			logger.Info("ResumeAgent: agent missing, creating because init-if-missing is enabled", "workspace", workspace, "name", name)
+			return o.CreateAgent(operator.CreateAgentParams{
+				Workspace:      workspace,
+				Name:           name,
+				Provider:       params.Provider,
+				Model:          params.Model,
+				Interactive:    true,
+				ResumeIfExists: false,
+				SessionID:      params.SessionID,
+			})
+		}
+		logger.Error("ResumeAgent: agent not found", "workspace", workspace, "name", name)
+		return fmt.Errorf("operator: agent %q not found in workspace %q", name, workspace)
+	}
+
+	// Resolve provider/model from persisted session; fall back to defaults.
+	provider := codeagent.Provider(operator.DefaultProvider)
+	model := operator.DefaultModel
+	sessionID := agent.ID
+	if o.sessionStore != nil {
+		if session, sErr := o.sessionStore.GetSession(agent.ID); sErr == nil && session != nil {
+			if session.Model != nil {
+				if session.Model.Provider != "" {
+					provider = session.Model.Provider
+				}
+				if session.Model.Model != "" {
+					model = session.Model.Model
+				}
+			}
+			if session.Id != "" {
+				sessionID = session.Id
+			}
+		} else {
+			logger.Debug("ResumeAgent: no persisted session, using defaults", "agentID", agent.ID)
+		}
+	}
+	requestedSessionID := strings.TrimSpace(params.SessionID)
+	if requestedSessionID != "" {
+		sessionID = requestedSessionID
+	}
+	if o.ptyDaemon != nil {
+		if infos, err := o.ptyDaemon.List(); err == nil {
+			for _, info := range infos {
+				if info != nil && info.AgentID == agent.ID && info.SessionID == sessionID && info.Status == "active" {
+					return fmt.Errorf("operator: session %q already has an active PTY terminal", sessionID)
+				}
+			}
+		} else {
+			logger.Debug("ResumeAgent: pty daemon active session check skipped", "agentID", agent.ID, "sessionID", sessionID, "err", err)
+		}
+	}
+
+	ca, err := o.createCodeAgent(agent, provider, string(agent.WorkspaceDir), model)
+	if err != nil {
+		logger.Error("ResumeAgent: init code agent runtime failed", "agentID", agent.ID, "err", err)
+		return fmt.Errorf("operator: init code agent runtime: %w", err)
+	}
+
+	// Provision a sandbox runtime for this resume session.
+	var sbxRuntime *sandbox.SandboxRuntime
+	if o.provisioner != nil {
+		workDir := string(agent.WorkspaceDir)
+		cfg := defaults.SandboxConfig(provider, workDir)
+		configDir := sandboxConfigDir(workDir, agent.Name)
+		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
+			ID:        agent.ID,
+			ConfigDir: configDir,
+			Config:    cfg,
+		})
+		if sbxErr != nil {
+			logger.Warn("ResumeAgent: sandbox provision failed", "agentID", agent.ID, "err", sbxErr)
+		} else {
+			sbxRuntime = &rt
+			logger.Debug("ResumeAgent: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider, "configDir", configDir)
+		}
+	}
+
+	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
+	if err != nil {
+		if !isSessionNotFoundError(err) {
+			logger.Error("ResumeAgent: resume failed", "agentID", agent.ID, "err", err)
+			return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
+		}
+		logger.Warn("ResumeAgent: no resumable session found, creating a new session", "agentID", agent.ID, "sessionID", sessionID)
+		createResult, createErr := ca.Create(codeagent.CreateSessionParams{
+			ID:        sessionID,
+			Name:      agent.Name,
+			Model:     model,
+			WorkDir:   string(agent.WorkspaceDir),
+			SessionID: requestedSessionID,
+			RunTime:   sbxRuntime,
+		})
+		if createErr != nil {
+			logger.Error("ResumeAgent: fallback create failed", "agentID", agent.ID, "err", createErr)
+			return fmt.Errorf("operator: create session fallback for agent %q: %w", agent.ID, createErr)
+		}
+		if createResult != nil && createResult.ID != "" {
+			sessionID = createResult.ID
+		}
+		if o.sessionStore != nil {
+			if storeErr := o.sessionStore.CreateSession(agent.ID, &omniagent.CodeSession{
+				Id:       sessionID,
+				Model:    &codeagent.Model{Provider: provider, Model: model},
+				IsActive: true,
+			}); storeErr != nil {
+				logger.Warn("ResumeAgent: fallback session store sync failed", "agentID", agent.ID, "sessionID", sessionID, "err", storeErr)
+			}
+		}
+		resumeResult, err = ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
+		if err != nil {
+			logger.Error("ResumeAgent: fallback resume failed", "agentID", agent.ID, "sessionID", sessionID, "err", err)
+			return fmt.Errorf("operator: resume fallback session for agent %q: %w", agent.ID, err)
+		}
+	}
+	o.registerPTYSession(agent.ID, sessionID, resumeResult)
+	logger.Info("ResumeAgent: completed", "agentID", agent.ID, "workspace", workspace, "name", name, "provider", provider, "sessionID", sessionID)
+	return nil
+}
+
+// New returns an Operator with the default embedded AgentMemory module enabled.
+// The memory feature is gated at runtime by OmniConfig.Features.Memory.
+func New() (operator.Operator, error) {
+	logger.Debug("New: initialising operator")
+	s, err := operatorstore.GetOperatorStore()
+	if err != nil {
+		logger.Error("New: store initialisation failed", "err", err)
+		return nil, fmt.Errorf("operator: init store: %w", err)
+	}
+	as, err := agentstore.GetOmniAgentStore()
+	if err != nil {
+		logger.Error("New: agent store initialisation failed", "err", err)
+		return nil, fmt.Errorf("operator: init agent store: %w", err)
+	}
+	ss, err := codesession.GetCodeSessionStore()
+	if err != nil {
+		logger.Error("New: session store initialisation failed", "err", err)
+		return nil, fmt.Errorf("operator: init session store: %w", err)
+	}
+	// Initialise a sandbox provisioner when a supported kind is available on the host.
+	var provisioner sandbox.SandboxProvisioner
+	if kinds := sandbox.HostSupportedProvisioners(); len(kinds) > 0 {
+		p, perr := sandbox.NewProvisioner(kinds[0], nil, sandbox.ProvisionerOptions{})
+		if perr != nil {
+			logger.Warn("New: sandbox provisioner init failed", "kind", kinds[0], "err", perr)
+		} else {
+			provisioner = p
+			logger.Info("New: sandbox provisioner ready", "kind", kinds[0])
+		}
+	}
+
+	ptyDaemon := newPTYDaemonClient()
+	op := &DefaultOperator{
+		config: config.OmniConfig{
+			Features: &config.Features{Memory: true},
+		},
+		store:        s,
+		agentStore:   as,
+		sessionStore: ss,
+		agentMemory:  operator.NewDefaultAgentMemory(),
+		provisioner:  provisioner,
+		ptyDaemon:    ptyDaemon,
+		newCodeAgent: func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+			switch provider {
+			case providerClaude:
+				return claude.New(workDir, model, nil)
+			case providerCodex:
+				return codex.New(workDir, model, nil)
+			case providerGemini:
+				return gemini.New(workDir, model, nil)
+			default:
+				return nil, fmt.Errorf("operator: unknown provider %q", provider)
+			}
+		},
+		newCodeAgentForAgent: func(agentID string, provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+			switch provider {
+			case providerClaude:
+				return claude.New(workDir, model, ptyDaemon)
+			case providerCodex:
+				return codex.New(workDir, model, &codexPTYAdapter{agentID: agentID, inner: ptyDaemon})
+			case providerGemini:
+				return gemini.New(workDir, model, ptyDaemon)
+			default:
+				return nil, fmt.Errorf("operator: unknown provider %q", provider)
+			}
+		},
+	}
+	logger.Info("New: operator initialised", "memoryEnabled", op.memoryEnabled(), "sandboxEnabled", provisioner != nil)
+	return op, nil
+}
+
+// memoryEnabled reports whether the agentMemory module should be invoked.
+// Both the module and the feature flag must be active.
+func (o *DefaultOperator) memoryEnabled() bool {
+	return o.agentMemory != nil &&
+		o.config.Features != nil &&
+		o.config.Features.Memory
+}
+
+// DisoverCodeAgents checks which code-agent CLI binaries are present in PATH.
+// For each available provider it calls codeagent.Discover() to enumerate models.
+func (o *DefaultOperator) DisoverCodeAgents() (*operator.DisocveryResult, error) {
+	logger.Debug("DisoverCodeAgents: scanning PATH for provider binaries")
+	candidates := []struct {
+		provider codeagent.Provider
+		binary   string
+	}{
+		{providerClaude, "claude"},
+		{providerCodex, "codex"},
+		// {providerGemini, "gemini"}, // temporarily disabled
+	}
+
+	cwd, _ := os.Getwd()
+
+	var providers []codeagent.Provider
+	var providerModels []operator.ProviderModels
+
+	for _, c := range candidates {
+		if _, err := exec.LookPath(c.binary); err != nil {
+			continue
+		}
+		providers = append(providers, c.provider)
+		logger.Debug("DisoverCodeAgents: provider available", "provider", c.provider, "binary", c.binary)
+
+		// Attempt model discovery via the codeagent interface.
+		if o.newCodeAgent != nil {
+			ca, caErr := o.newCodeAgent(c.provider, cwd, "")
+			if caErr == nil {
+				if result, discErr := ca.Discover(); discErr == nil {
+					models := make([]string, len(result.Models))
+					for i, m := range result.Models {
+						models[i] = string(m)
+					}
+					providerModels = append(providerModels, operator.ProviderModels{
+						Provider: c.provider,
+						Models:   models,
+					})
+					logger.Debug("DisoverCodeAgents: models discovered", "provider", c.provider, "count", len(models))
+					continue
+				}
+			}
+			logger.Debug("DisoverCodeAgents: model discovery unavailable, skipping", "provider", c.provider)
+		}
+	}
+
+	logger.Info("DisoverCodeAgents: completed", "providers", providers, "modelEntries", len(providerModels))
+	return &operator.DisocveryResult{Providers: providers, Models: providerModels}, nil
+}
+
+// ListCodeAgents returns agents registered under the given workspace directory.
+func (o *DefaultOperator) ListCodeAgents(params operator.GetCodeAgentsParams) (*operator.GetAgentsResult, error) {
+	if err := params.Validate(); err != nil {
+		logger.Error("ListCodeAgents: validation failed", "err", err)
+		return nil, err
+	}
+	workspace, err := o.resolveWorkspace(params.Workspace)
+	if err != nil {
+		logger.Error("ListCodeAgents: workspace resolution failed", "workspace", params.Workspace, "err", err)
+		return nil, err
+	}
+	logger.Debug("ListCodeAgents: listing agents", "workspace", workspace)
+	agents, err := o.store.ListAgentsByDir(workspace)
+	if err != nil {
+		logger.Error("ListCodeAgents: store query failed", "workspace", workspace, "err", err)
+		return nil, err
+	}
+	if len(agents) == 0 {
+		logger.Info("ListCodeAgents: no agents found", "workspace", workspace)
+		return &operator.GetAgentsResult{}, nil
+	}
+	logger.Info("ListCodeAgents: agents resolved", "workspace", workspace, "count", len(agents))
+	return &operator.GetAgentsResult{Agents: agents}, nil
+}
+
+// CreateAgent creates a new agent entry, auto-creating the workspace when needed.
+// When memory is enabled, the agent's memory directory is seeded with the initial template.
+func (o *DefaultOperator) CreateAgent(params operator.CreateAgentParams) error {
+	if err := params.Validate(); err != nil {
+		logger.Error("CreateAgent: validation failed", "err", err)
+		return err
+	}
+	workspace, err := o.resolveWorkspace(params.Workspace)
+	if err != nil {
+		logger.Error("CreateAgent: workspace resolution failed", "workspace", params.Workspace, "err", err)
+		return err
+	}
+	logger.Info("CreateAgent: start", "workspace", workspace, "name", params.Name, "provider", params.Provider, "model", params.Model, "interactive", params.Interactive, "memoryEnabled", o.memoryEnabled())
+
+	if params.ResumeIfExists {
+		agentName := sanitizeAgentName(params.Name)
+		if agentName != "" {
+			agents, err := o.store.ListAgentsByDir(workspace)
+			if err != nil {
+				logger.Error("CreateAgent: existing agent lookup failed", "workspace", workspace, "err", err)
+				return fmt.Errorf("operator: list existing agents: %w", err)
+			}
+			for _, existing := range agents {
+				if existing.Name == agentName {
+					logger.Info("CreateAgent: agent already exists, resuming instead of creating", "workspace", workspace, "name", agentName, "agentID", existing.ID)
+					return o.ResumeAgent(operator.ResumeAgentParams{
+						Workspace: workspace,
+						Name:      agentName,
+					})
+				}
+			}
+		}
+	}
+
+	if o.memoryEnabled() && !memoryRootExists(string(workspace)) {
+		logger.Info("CreateAgent: memory root missing, initialising workspace memory", "workspace", workspace)
+		if err := o.agentMemory.Init(string(workspace), ""); err != nil {
+			logger.Error("CreateAgent: auto team-init failed", "workspace", workspace, "err", err)
+			return fmt.Errorf("operator: create agent: init memory root: %w", err)
+		}
+	}
+
+	ws, err := o.store.WorkspaceByDir(workspace)
+	if err != nil {
+		logger.Debug("CreateAgent: workspace missing, creating new workspace", "workspace", workspace)
+		ws = &operator.TeamInfo{
+			ID:           uuid.NewString(),
+			Name:         filepath.Base(string(workspace)),
+			WorkspaceDir: string(workspace),
+		}
+		if err := o.store.CreateWorkspace(ws); err != nil {
+			logger.Error("CreateAgent: workspace creation failed", "workspace", workspace, "err", err)
+			return fmt.Errorf("operator: create workspace: %w", err)
+		}
+		logger.Info("CreateAgent: workspace created", "workspaceID", ws.ID, "workspace", ws.WorkspaceDir)
+	}
+
+	agentID := uuid.NewString()
+	agentName := sanitizeAgentName(params.Name)
+	if agentName == "" {
+		agentName = fmt.Sprintf("agent-%s", agentID[:8])
+	}
+
+	// Reject duplicate names within the same workspace.
+	existing, err := o.store.ListAgentsByDir(workspace)
+	if err != nil {
+		logger.Error("CreateAgent: name collision check failed", "workspace", workspace, "err", err)
+		return fmt.Errorf("operator: create agent: check existing agents: %w", err)
+	}
+	for _, a := range existing {
+		if a.Name == agentName {
+			logger.Error("CreateAgent: duplicate name", "workspace", workspace, "name", agentName)
+			return fmt.Errorf("operator: agent %q already exists in workspace", agentName)
+		}
+	}
+
+	memDir := operator.AgentMemDir(string(workspace), agentName)
+
+	agent := &omniagent.AgentInfo{
+		ID:           agentID,
+		Name:         agentName,
+		WorkspaceDir: workspace,
+		MemoryDir:    memDir,
+	}
+	if err := o.store.CreateAgent(agent); err != nil {
+		logger.Error("CreateAgent: store insert failed", "workspaceID", ws.ID, "agentID", agentID, "err", err)
+		return fmt.Errorf("operator: create agent (workspace %s): %w", ws.ID, err)
+	}
+	if o.agentStore != nil {
+		if err := o.agentStore.UpdateSettings(agentID, &omniagent.Settings{}); err != nil {
+			logger.Warn("CreateAgent: settings init failed", "agentID", agentID, "err", err)
+		}
+	}
+	logger.Info("CreateAgent: agent stored", "workspaceID", ws.ID, "agentID", agentID, "memoryDir", memDir)
+
+	if o.memoryEnabled() {
+		if err := o.agentMemory.Create(memDir); err != nil {
+			logger.Error("CreateAgent: memory seed failed", "agentID", agentID, "memoryDir", memDir, "err", err)
+			return fmt.Errorf("operator: create agent: seed memory: %w", err)
+		}
+		logger.Info("CreateAgent: memory seeded", "agentID", agentID, "memoryDir", memDir)
+	}
+
+	if err := o.startAgentSession(agent, params.Provider, params.Model, params.Interactive, params.SessionID); err != nil {
+		logger.Warn("CreateAgent: session bootstrap failed — agent persisted; use 'omni agent resume' to start session", "agentID", agentID, "provider", params.Provider, "model", params.Model, "err", err)
+	}
+	logger.Info("CreateAgent: completed", "workspaceID", ws.ID, "agentID", agentID)
+	return nil
+}
+
+// TeamInit initialises the workspace memory root.
+// Returns ErrMemoryDisabled when the memory feature is off.
+func (o *DefaultOperator) TeamInit(params operator.TeamInitParams) error {
+	if err := params.Validate(); err != nil {
+		logger.Error("TeamInit: validation failed", "err", err)
+		return err
+	}
+	workspace, err := o.resolveWorkspace(params.Workspace)
+	if err != nil {
+		logger.Error("TeamInit: workspace resolution failed", "workspace", params.Workspace, "err", err)
+		return err
+	}
+	logger.Info("TeamInit: start", "workspace", workspace, "repoURL", params.RepoURL, "memoryEnabled", o.memoryEnabled())
+	if !o.memoryEnabled() {
+		logger.Error("TeamInit: memory feature disabled", "workspace", workspace)
+		return operator.ErrMemoryDisabled
+	}
+	if err := o.agentMemory.Init(string(workspace), params.RepoURL); err != nil {
+		logger.Error("TeamInit: initialisation failed", "workspace", workspace, "err", err)
+		return fmt.Errorf("operator: team-init: %w", err)
+	}
+	if err := o.ensureWorkspaceAndGuideAgent(workspace); err != nil {
+		logger.Error("TeamInit: guide agent initialisation failed", "workspace", workspace, "err", err)
+		return fmt.Errorf("operator: team-init: ensure guide agent: %w", err)
+	}
+	logger.Info("TeamInit: completed", "workspace", workspace)
+	return nil
+}
+
+// UpgradeAgent applies a newer template version to an existing agent's memory directory.
+// Returns ErrMemoryDisabled when the memory feature is off.
+func (o *DefaultOperator) UpgradeAgent(params operator.UpgradeAgentParams) error {
+	if err := params.Validate(); err != nil {
+		logger.Error("UpgradeAgent: validation failed", "err", err)
+		return err
+	}
+	logger.Info("UpgradeAgent: start", "agentID", params.ID, "version", params.Version, "memoryEnabled", o.memoryEnabled())
+	if !o.memoryEnabled() {
+		logger.Error("UpgradeAgent: memory feature disabled", "agentID", params.ID)
+		return operator.ErrMemoryDisabled
+	}
+	agent, err := o.store.GetAgent(params.ID)
+	if err != nil {
+		logger.Error("UpgradeAgent: agent lookup failed", "agentID", params.ID, "err", err)
+		return fmt.Errorf("operator: upgrade agent %q: %w", params.ID, err)
+	}
+	version := params.Version
+	if version == "" {
+		version = operator.LatestVersion
+	}
+	if err := o.agentMemory.Upgrade(agent.MemoryDir, version); err != nil {
+		logger.Error("UpgradeAgent: template upgrade failed", "agentID", params.ID, "version", version, "memoryDir", agent.MemoryDir, "err", err)
+		return fmt.Errorf("operator: upgrade agent %q: %w", params.ID, err)
+	}
+	logger.Info("UpgradeAgent: completed", "agentID", params.ID, "version", version, "memoryDir", agent.MemoryDir)
+	return nil
+}
+
+// ListWorkspaces returns all workspaces with their agent counts.
+func (o *DefaultOperator) ListWorkspaces(_ operator.ListWorkspacesParams) (operator.ListWorkspacesResult, error) {
+	logger.Debug("ListWorkspaces: loading workspaces")
+	teams, err := o.store.ListWorkspaces()
+	if err != nil {
+		logger.Error("ListWorkspaces: store query failed", "err", err)
+		return operator.ListWorkspacesResult{}, err
+	}
+	logger.Info("ListWorkspaces: completed", "count", len(teams))
+	return operator.ListWorkspacesResult{Teams: teams}, nil
+}
+
+// GetWorkspace returns a workspace and all agents registered under it.
+func (o *DefaultOperator) GetWorkspace(params operator.GetWorkSpaceParams) (operator.GetTeamResult, error) {
+	if err := params.Validate(); err != nil {
+		logger.Error("GetWorkspace: validation failed", "err", err)
+		return operator.GetTeamResult{}, err
+	}
+	logger.Debug("GetWorkspace: loading workspace", "workspaceID", params.ID)
+	ws, err := o.store.GetWorkspace(params.ID)
+	if err != nil {
+		logger.Error("GetWorkspace: workspace lookup failed", "workspaceID", params.ID, "err", err)
+		return operator.GetTeamResult{}, fmt.Errorf("operator: get workspace %q: %w", params.ID, err)
+	}
+	agents, err := o.store.ListAgentsByDir(o.workspaceDirOf(ws))
+	if err != nil {
+		logger.Error("GetWorkspace: agent listing failed", "workspaceID", params.ID, "workspace", ws.WorkspaceDir, "err", err)
+		return operator.GetTeamResult{}, fmt.Errorf("operator: list agents for workspace %q: %w", params.ID, err)
+	}
+	logger.Info("GetWorkspace: completed", "workspaceID", params.ID, "agentCount", len(agents))
+	return operator.GetTeamResult{Info: ws, Agents: agents}, nil
+}
+
+// DeleteAgent removes an agent entry from the index.
+// When memory is enabled, the agent's memory directory is also deleted from disk.
+func (o *DefaultOperator) DeleteAgent(params operator.DeleteAgentParams) error {
+	if err := params.Validate(); err != nil {
+		logger.Error("DeleteAgent: validation failed", "err", err)
+		return err
+	}
+	logger.Info("DeleteAgent: start", "agentID", params.ID, "memoryEnabled", o.memoryEnabled())
+	if o.memoryEnabled() {
+		agent, err := o.store.GetAgent(params.ID)
+		if err == nil {
+			if deleteErr := o.agentMemory.Delete(agent.MemoryDir); deleteErr != nil {
+				logger.Error("DeleteAgent: memory delete failed", "agentID", params.ID, "memoryDir", agent.MemoryDir, "err", deleteErr)
+			} else {
+				logger.Info("DeleteAgent: memory deleted", "agentID", params.ID, "memoryDir", agent.MemoryDir)
+			}
+		} else {
+			logger.Debug("DeleteAgent: memory delete skipped, agent lookup failed", "agentID", params.ID, "err", err)
+		}
+	}
+	if err := o.store.DeleteAgent(params.ID); err != nil {
+		logger.Error("DeleteAgent: store delete failed", "agentID", params.ID, "err", err)
+		return err
+	}
+	if o.agentStore != nil {
+		if err := o.agentStore.DeleteAgent(params.ID); err != nil {
+			logger.Warn("DeleteAgent: agent store sync failed", "agentID", params.ID, "err", err)
+		}
+	}
+	logger.Info("DeleteAgent: completed", "agentID", params.ID)
+	return nil
+}
+
+// workspaceDirOf converts a TeamInfo directory string to a WorkspaceDir.
+func (o *DefaultOperator) workspaceDirOf(ws *operator.TeamInfo) sandbox.WorkspaceDir {
+	return sandbox.WorkspaceDir(ws.WorkspaceDir)
+}
+
+func (o *DefaultOperator) resolveWorkspace(in sandbox.WorkspaceDir) (sandbox.WorkspaceDir, error) {
+	if in != "" {
+		return in, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("operator: resolve workspace: getwd: %w", err)
+	}
+	if resolved, ok := findWorkspaceFromMemory(cwd); ok {
+		logger.Debug("resolveWorkspace: resolved from ancestor memory root", "cwd", cwd, "workspace", resolved)
+		return sandbox.WorkspaceDir(resolved), nil
+	}
+	logger.Debug("resolveWorkspace: defaulting to cwd", "cwd", cwd)
+	return sandbox.WorkspaceDir(cwd), nil
+}
+
+func findWorkspaceFromMemory(start string) (string, bool) {
+	dir := filepath.Clean(start)
+	for {
+		if memoryRootExists(dir) {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func memoryRootExists(workspace string) bool {
+	info, err := os.Stat(filepath.Join(workspace, operator.MemoryDirName))
+	return err == nil && info.IsDir()
+}
+
+func sanitizeAgentName(name string) string {
+	return strings.TrimSpace(name)
+}
+
+func isSessionNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no session") || strings.Contains(msg, "session not found")
+}
+
+func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider codeagent.Provider, model string, interactive bool, requestedSessionID string) error {
+	if provider == "" {
+		provider = codeagent.Provider(operator.DefaultProvider)
+	}
+
+	// Only apply the global default for the default (claude) provider.
+	// Other providers (codex, gemini, …) handle their own defaults inside New().
+	if model == "" && provider == codeagent.Provider(operator.DefaultProvider) {
+		model = operator.DefaultModel
+	}
+
+	ca, err := o.createCodeAgent(agent, provider, string(agent.WorkspaceDir), model)
+	if err != nil {
+		return fmt.Errorf("operator: init code agent: %w", err)
+	}
+
+	// If model was left empty the factory applied its own default; read it back
+	// so logging and session-store persistence use the real model name.
+	if model == "" {
+		if cfg, cfgErr := ca.GetSessionConfig(codeagent.GetSessionConfigParams{}); cfgErr == nil && cfg.Model.Model != "" {
+			model = cfg.Model.Model
+		}
+	}
+
+	// Provision a sandbox runtime for this session when the provisioner is available.
+	var sbxRuntime *sandbox.SandboxRuntime
+	if o.provisioner != nil {
+		workDir := string(agent.WorkspaceDir)
+		cfg := defaults.SandboxConfig(provider, workDir)
+		configDir := sandboxConfigDir(workDir, agent.Name)
+		rt, sbxErr := o.provisioner.Create(sandbox.CreateSandboxParams{
+			ID:        agent.ID,
+			ConfigDir: configDir,
+			Config:    cfg,
+		})
+		if sbxErr != nil {
+			logger.Warn("startAgentSession: sandbox provision failed", "agentID", agent.ID, "err", sbxErr)
+		} else {
+			sbxRuntime = &rt
+			logger.Debug("startAgentSession: sandbox runtime provisioned", "agentID", agent.ID, "provider", provider, "configDir", configDir)
+		}
+	}
+
+	requestedSessionID = strings.TrimSpace(requestedSessionID)
+	createID := agent.ID
+	if requestedSessionID != "" {
+		createID = requestedSessionID
+	}
+	createResult, err := ca.Create(codeagent.CreateSessionParams{
+		ID:        createID,
+		Name:      agent.Name,
+		Model:     model,
+		WorkDir:   string(agent.WorkspaceDir),
+		SessionID: requestedSessionID,
+		RunTime:   sbxRuntime,
+	})
+	if err != nil {
+		return fmt.Errorf("operator: create session for agent %q: %w", agent.ID, err)
+	}
+
+	sessionID := createID
+	if createResult != nil && createResult.ID != "" {
+		sessionID = createResult.ID
+	}
+
+	// Persist the session to the code session store.
+	if o.sessionStore != nil {
+		if err := o.sessionStore.CreateSession(agent.ID, &omniagent.CodeSession{
+			Id:       sessionID,
+			Model:    &codeagent.Model{Provider: provider, Model: model},
+			IsActive: true,
+		}); err != nil {
+			logger.Warn("startAgentSession: session store sync failed", "agentID", agent.ID, "sessionID", sessionID, "err", err)
+		}
+	}
+	logger.Info("startAgentSession: session created", "agentID", agent.ID, "provider", provider, "sessionID", sessionID, "interactive", interactive)
+
+	if !interactive {
+		logger.Info("startAgentSession: interactive session is not attached", "agentID", agent.ID, "provider", provider, "sessionID", sessionID)
+		return nil
+	}
+
+	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID}); err != nil {
+		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
+	}
+	logger.Info("startAgentSession: interactive session resumed", "agentID", agent.ID, "provider", provider, "sessionID", sessionID)
+	return nil
+}
+
+func (o *DefaultOperator) ensureWorkspaceAndGuideAgent(workspace sandbox.WorkspaceDir) error {
+	ws, err := o.store.WorkspaceByDir(workspace)
+	if err != nil {
+		ws = &operator.TeamInfo{
+			ID:           uuid.NewString(),
+			Name:         filepath.Base(string(workspace)),
+			WorkspaceDir: string(workspace),
+		}
+		if err := o.store.CreateWorkspace(ws); err != nil {
+			return err
+		}
+	}
+
+	agents, err := o.store.ListAgentsByDir(workspace)
+	if err != nil {
+		return err
+	}
+	for _, agent := range agents {
+		if agent.Name == "guide" {
+			return nil
+		}
+	}
+
+	guide := &omniagent.AgentInfo{
+		ID:           uuid.NewString(),
+		Name:         "guide",
+		WorkspaceDir: workspace,
+		MemoryDir:    operator.AgentMemDir(string(workspace), "guide"),
+	}
+	if err := o.store.CreateAgent(guide); err != nil {
+		return err
+	}
+	if o.agentStore != nil {
+		if err := o.agentStore.Create(&omniagent.Data{Info: guide}); err != nil {
+			logger.Warn("ensureWorkspaceAndGuideAgent: agent store sync failed", "agentID", guide.ID, "err", err)
+		}
+	}
+	if o.memoryEnabled() {
+		if err := o.agentMemory.Create(guide.MemoryDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sandboxConfigDir returns the per-agent sandbox config directory:
+// <workspaceDir>/memory/agents/<agentName>/sandbox
+func sandboxConfigDir(workspaceDir, agentName string) string {
+	if workspaceDir == "" || agentName == "" {
+		return ""
+	}
+	return filepath.Join(workspaceDir, operator.MemoryDirName, "agents", agentName, "sandbox")
+}
+
+// GetCodeAgentResolver returns the SettingsResolver for the given provider.
+// Claude and Codex use their settings sub-packages directly.
+// Gemini has no exported settings constructor and returns ErrResolverUnavailable.
+func (o *DefaultOperator) GetCodeAgentResolver(agent codeagent.Provider) (*codeagent.SettingsResolver, error) {
+	logger.Debug("GetCodeAgentResolver: resolving provider", "provider", agent)
+	var r codeagent.SettingsResolver
+	switch agent {
+	case providerClaude:
+		r = claudesettings.New(providerClaude)
+	case providerCodex:
+		r = codexsettings.New(providerCodex)
+	case providerGemini:
+		logger.Error("GetCodeAgentResolver: resolver unavailable", "provider", providerGemini)
+		return nil, fmt.Errorf("operator: %w: %s", operator.ErrResolverUnavailable, providerGemini)
+	default:
+		logger.Error("GetCodeAgentResolver: unknown provider", "provider", agent)
+		return nil, fmt.Errorf("operator: unknown provider %q", agent)
+	}
+	logger.Info("GetCodeAgentResolver: resolver ready", "provider", agent)
+	return &r, nil
+}

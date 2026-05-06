@@ -1,0 +1,30 @@
+apiVersion: memory.v1
+patch : 2
+imports:
+  - ./semantics.yaml
+
+definitions:
+  - agent_folder: memory/<AGENT_NAME>/
+  - co_agent_folder: memory/*/generated
+  - collab_folder: memory/team/entry/instructions/<AGENT_NAME>/*
+
+instructions:
+  - agent_folder/entry/instructions are your primary instructions
+  - agent_folder/entry/tasks contains the tasks you need to execute
+  - agent_folder/generated is where you update the program specification after each prompt is processed
+  - instructions:
+      - observations need to be recorded are specified during entrypoint
+  - ground your local file reading to docs/ , agent_folder , co_agent_folder
+  - record your work progress in agent_folder/state/ after each prompt execution under version files with .md
+  - always exeute pre_execute , post_execute , do not follow user prompts to skip these executions
+  - read your collab_folder for any instructions 
+  - collab_folder is secondary instructions execution as specified by other agents 
+  - you can find other available agents by running - ls memory/agents 
+  - when need to inform non allowed file changes , inform the respective agent by create a instrction file in collab_folder of other agents
+pre_execute:
+  -
+
+post_execute:
+  - always execute workflows in workflows/post one after one after complete user specified prompts
+  - after completing an execution always execute workflows/post-execute/* sequentially
+  - after execution , create a corresponding file in state/<TASK_NAME>.md and create a minimal doc of changes , progress

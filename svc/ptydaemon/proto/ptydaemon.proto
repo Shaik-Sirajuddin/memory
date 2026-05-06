@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package ptydaemon.v1;
+
+option go_package = "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/proto/ptydaemonv1";
+
+service PTYDaemon {
+    rpc Create(CreateRequest) returns (TerminalInfo);
+    rpc Pipe(PipeRequest)     returns (Empty);
+    rpc Exec(ExecRequest)     returns (Empty);
+    rpc Stop(StopRequest)     returns (Empty);
+    rpc List(Empty)           returns (ListResponse);
+}
+
+message CreateRequest {
+    string           agent_id   = 1;
+    string           session_id = 2;
+    string           command    = 3;
+    repeated string  args       = 4;
+    string           submit_key = 5;
+    repeated string  env        = 6;
+}
+
+message TerminalInfo {
+    string agent_id   = 1;
+    string session_id = 2;
+    int32  pid        = 3;
+    string status     = 4;
+}
+
+message PipeRequest {
+    string agent_id   = 1;
+    string session_id = 2;
+    bytes  data       = 3;
+}
+
+message ExecRequest {
+    string agent_id   = 1;
+    string session_id = 2;
+    string prompt     = 3;
+}
+
+message StopRequest {
+    string agent_id   = 1;
+    string session_id = 2;
+}
+
+message ListResponse {
+    repeated TerminalInfo terminals = 1;
+}
+
+message Empty {}

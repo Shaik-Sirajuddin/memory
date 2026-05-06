@@ -1,1 +1,5 @@
 .env
+.claude
+.codex
+.gemini
+agent[-_]*.md

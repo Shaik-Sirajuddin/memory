@@ -1,0 +1,16 @@
+[Unit]
+Description=PTY Daemon — manages persistent PTY sessions for omni agents
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${PTYDAEMON_BIN}
+Restart=on-failure
+RestartSec=3s
+Environment=PTYDAEMON_SOCKET=${PTYDAEMON_SOCKET:-/tmp/ptydaemon.sock}
+Environment=PTYDAEMON_DB=${PTYDAEMON_DB:-/var/lib/ptydaemon/ptydaemon.db}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+docs:
+  source_of_truth:
+    - agent.md
+    - omniagent.go
+    - config/settings.go
+    - store/omniagent.go
+    - store/session.go
+
+  deliverables:
+    - path: docs/explanation.md
+      purpose: Architecture overview for omniagent runtime, persistence, and hook lifecycle.
+    - path: docs/reference.md
+      purpose: API-style reference for types, interfaces, factories, and datastore-backed behavior.
+    - path: datastore.yaml
+      purpose: Compact datastore contract for sqlite tables and store interfaces.
+
+  notes:
+    - Keep docs scoped to omniagent rather than operator.
+    - Prefer the agent manifest as the authoritative contract when docs and code drift.
+    - Describe the sqlite layout and singleton store factories.

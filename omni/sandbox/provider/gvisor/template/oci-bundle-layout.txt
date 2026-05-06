@@ -1,0 +1,6 @@
+<bundle-dir>/
+  config.json
+  rootfs/
+    bin/
+    etc/
+    tmp/

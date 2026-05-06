@@ -1,0 +1,30 @@
+time: 2026-05-03 13:54:04 IST
+changed_file: ./play/watcher_probe.txt
+inference: file changed; bytes=82 lines=4
+preview: Watcher probe second change third change I do not like the grammar in this sentence.
+---
+time: 2026-05-03 13:54:28 IST
+changed_file: ./play/test.txt
+inference: file changed; bytes=50 lines=5
+preview: Hi hello hello hello ow are you.
+---
+time: 2026-05-03 13:54:37 IST
+changed_file: ./play/test.txt
+inference: file changed; bytes=68 lines=6
+preview: Hi hello hello hello ow are you.
+---
+time: 2026-05-03 13:54:45 IST
+changed_file: ./play/test.txt
+inference: file changed; bytes=50 lines=4
+preview: Hi hello hello what is the time what is the time.
+---
+time: 2026-05-03 13:54:51 IST
+changed_file: ./play/test.txt
+inference: file changed; bytes=32 lines=3
+preview: Hi hello hello what is the time.
+---
+time: 2026-05-03 13:54:57 IST
+changed_file: ./play/test.txt
+inference: file changed; bytes=30 lines=3
+preview: Hi hello hello what is the tme.
+---
