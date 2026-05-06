@@ -11,14 +11,18 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 const (
@@ -279,26 +283,94 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 		resolvedSessionID = "last"
 	}
 
-	// PTY mode: start under pty.Start so the caller gets the PID immediately.
+	// PTY mode: full I/O bridge so the user sees output and can type, while
+	// ExecInSession can inject prompts via the same serialised write channel.
 	if ptyClient != nil {
 		cmd := exec.Command(binPath, args...)
 		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+
 		master, err := pty.Start(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("codex: resume: pty start: %w", err)
 		}
-		pid := fmt.Sprintf("%d", cmd.Process.Pid)
+
+		// Propagate terminal resize events to the PTY.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGWINCH)
+		go func() {
+			for range sigCh {
+				_ = pty.InheritSize(os.Stdin, master)
+			}
+		}()
+		sigCh <- syscall.SIGWINCH // set initial size
+
+		// Switch stdin to raw mode so keystrokes go straight through.
+		var oldState *term.State
+		if st, err := term.MakeRaw(int(os.Stdin.Fd())); err != nil {
+			logger.Warn("Resume: raw mode unavailable", "err", err)
+		} else {
+			oldState = st
+		}
+
+		// Serialised write channel — both keyboard input and ExecInSession use it.
+		wch := make(chan []byte, 128)
 		a.mu.Lock()
 		a.masterPTY = master
+		a.writeCh = wch
 		a.activeCmd = cmd
 		a.mu.Unlock()
+
+		// Single writer goroutine: drains wch and writes to PTY master.
+		go func() {
+			for chunk := range wch {
+				_, _ = master.Write(chunk)
+			}
+		}()
+
+		// Bridge PTY master → stdout so the user sees codex's output.
+		go func() { _, _ = io.Copy(os.Stdout, master) }()
+
+		// Bridge stdin → wch so the user can type.
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := os.Stdin.Read(buf)
+				if n > 0 {
+					wch <- append([]byte(nil), buf[:n]...)
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+
+		pid := strconv.Itoa(cmd.Process.Pid)
+		logger.Info("Resume: PTY session started", "pid", pid, "sessionID", resolvedSessionID)
+
+		done := make(chan struct{})
+
+		// Cleanup goroutine: restores terminal state and notifies daemon on exit.
 		go func() {
 			_ = cmd.Wait()
+			signal.Stop(sigCh)
+			close(sigCh)
+			if oldState != nil {
+				_ = term.Restore(int(os.Stdin.Fd()), oldState)
+			}
+			close(wch)
 			a.mu.Lock()
 			a.masterPTY = nil
+			a.writeCh = nil
 			a.mu.Unlock()
+			if s, ok := ptyClient.(interface{ Stop(string) error }); ok {
+				_ = s.Stop(resolvedSessionID)
+			}
+			logger.Debug("Resume: PTY session terminated", "sessionID", resolvedSessionID)
+			close(done)
 		}()
-		logger.Info("Resume: PTY session started", "pid", pid, "sessionID", resolvedSessionID)
+
+		<-done
 		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
 	}
 
@@ -371,7 +443,7 @@ func (a *codexAgent) attachAndRun(binPath, workDir string, args []string) (pid s
 // Payload: ctrlU + pasteStart + prompt + pasteEnd + submitKey
 func (a *codexAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
 	a.mu.RLock()
-	master := a.masterPTY
+	wch := a.writeCh
 	client := a.ptyClient
 	agentID := a.sessionID
 	a.mu.RUnlock()
@@ -387,10 +459,8 @@ func (a *codexAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.
 	payload := []byte("\x15\x1b[200~" + p.Prompt + "\x1b[201~" + submitKey)
 
 	switch {
-	case master != nil:
-		if _, err := master.Write(payload); err != nil {
-			return nil, fmt.Errorf("codex: ExecInSession: write to PTY: %w", err)
-		}
+	case wch != nil:
+		wch <- payload
 	case client != nil:
 		if err := client.Pipe(agentID, sid, payload); err != nil {
 			return nil, fmt.Errorf("codex: ExecInSession: session not live: %w", err)

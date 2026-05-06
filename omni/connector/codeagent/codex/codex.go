@@ -87,6 +87,7 @@ type codexAgent struct {
 	sessionID       string
 	activeCmd       *exec.Cmd
 	masterPTY       *os.File
+	writeCh         chan []byte
 	sbx             *sandbox.Config
 	sbxRuntime      sandbox.SandboxRuntime
 	info            codeagent.CodeAgentInfo
