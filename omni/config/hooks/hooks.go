@@ -24,18 +24,18 @@ type Hook struct {
 
 // EventBase fields present in every hook payload from any codeagent.
 type EventBase struct {
-	SessionID      string `json:"session_id"`
-	TranscriptPath string `json:"transcript_path"`
-	Cwd            string `json:"cwd"`
-	HookEventName  string `json:"hook_event_name"`
+	SessionID      string `json:"session_id"       jsonschema:"title=Session ID,description=Unique identifier for the agent session"`
+	TranscriptPath string `json:"transcript_path"  jsonschema:"title=Transcript Path,description=Absolute path to the session transcript file"`
+	Cwd            string `json:"cwd"              jsonschema:"title=Working Directory,description=Working directory of the agent process"`
+	HookEventName  string `json:"hook_event_name"  jsonschema:"title=Hook Event Name,description=Name of the hook event that fired"`
 }
 
 // Response is the canonical fields shared by every hook response.
 type Response struct {
-	Continue       bool    `json:"continue"`
-	StopReason     *string `json:"stop_reason,omitempty"`
-	SuppressOutput bool    `json:"suppress_output"`
-	SystemMessage  *string `json:"system_message,omitempty"`
+	Continue       bool    `json:"continue"                  jsonschema:"title=Continue,description=Whether the agent should continue; semantics are inverted for post_prompt (true overrides stop)"`
+	StopReason     *string `json:"stop_reason,omitempty"     jsonschema:"title=Stop Reason,description=Optional reason string passed to the agent when stopping"`
+	SuppressOutput bool    `json:"suppress_output"           jsonschema:"title=Suppress Output,description=Hide tool result or response from downstream consumers"`
+	SystemMessage  *string `json:"system_message,omitempty"  jsonschema:"title=System Message,description=Text injected into the agent context alongside the hook response"`
 }
 
 // HookResponseSchema is what omni sends back to the codeagent after processing a hook.
@@ -58,9 +58,9 @@ type HookResultSchema struct {
 
 type PreToolUseInput struct {
 	EventBase
-	ToolName  string         `json:"tool_name"`
-	ToolInput map[string]any `json:"tool_input"`
-	ToolUseID string         `json:"tool_use_id"`
+	ToolName  string         `json:"tool_name"  jsonschema:"title=Tool Name,description=Name of the tool being called"`
+	ToolInput map[string]any `json:"tool_input"  jsonschema:"title=Tool Input,description=Arguments passed to the tool"`
+	ToolUseID string         `json:"tool_use_id" jsonschema:"title=Tool Use ID,description=Unique identifier for this tool invocation"`
 }
 
 // PreToolUseResponseSchema — response hook.
@@ -83,10 +83,10 @@ func (s *PreToolUseSchema) EventName() string { return string(hooks.PreToolUse) 
 
 type PostToolUseInput struct {
 	EventBase
-	ToolName     string         `json:"tool_name"`
-	ToolInput    map[string]any `json:"tool_input"`
-	ToolUseID    string         `json:"tool_use_id"`
-	ToolResponse any            `json:"tool_response"`
+	ToolName     string         `json:"tool_name"     jsonschema:"title=Tool Name,description=Name of the tool that was called"`
+	ToolInput    map[string]any `json:"tool_input"    jsonschema:"title=Tool Input,description=Arguments that were passed to the tool"`
+	ToolUseID    string         `json:"tool_use_id"   jsonschema:"title=Tool Use ID,description=Unique identifier for this tool invocation"`
+	ToolResponse any            `json:"tool_response" jsonschema:"title=Tool Response,description=Output returned by the tool"`
 }
 
 // PostToolUseResponseSchema — response hook.
@@ -108,10 +108,10 @@ func (s *PostToolUseSchema) EventName() string { return string(hooks.PostToolUse
 
 type PostToolUseFailureInput struct {
 	EventBase
-	ToolName  string         `json:"tool_name"`
-	ToolInput map[string]any `json:"tool_input"`
-	ToolUseID string         `json:"tool_use_id"`
-	Error     string         `json:"error"`
+	ToolName  string         `json:"tool_name"  jsonschema:"title=Tool Name,description=Name of the tool that failed"`
+	ToolInput map[string]any `json:"tool_input"  jsonschema:"title=Tool Input,description=Arguments that were passed to the tool"`
+	ToolUseID string         `json:"tool_use_id" jsonschema:"title=Tool Use ID,description=Unique identifier for this tool invocation"`
+	Error     string         `json:"error"       jsonschema:"title=Error,description=Error message returned by the tool"`
 }
 
 // PostToolUseFailureResponseSchema — response hook.
@@ -133,7 +133,7 @@ func (s *PostToolUseFailureSchema) EventName() string { return string(hooks.Post
 
 type PreSessionStartInput struct {
 	EventBase
-	Source string `json:"source"` // "startup" | "resume" | "clear" | "compact"
+	Source string `json:"source" jsonschema:"title=Source,description=Reason the session is starting — one of: startup | resume | clear | compact"`
 }
 
 // PreSessionStartResponseSchema — response hook.
@@ -178,7 +178,7 @@ func (s *PostSessionStartSchema) EventName() string { return string(hooks.PostSe
 
 type PrePromptInput struct {
 	EventBase
-	Prompt string `json:"prompt"` // raw user prompt before agent sees it
+	Prompt string `json:"prompt" jsonschema:"title=Prompt,description=Raw user prompt before the agent sees it"`
 }
 
 // PrePromptResponseSchema — response hook.
@@ -201,8 +201,8 @@ func (s *PrePromptSchema) EventName() string { return string(hooks.PrePrompt) }
 
 type PostPromptInput struct {
 	EventBase
-	Prompt      string `json:"prompt"`   // original user prompt
-	AgentAnswer string `json:"response"` // agent's final answer; named AgentAnswer to avoid clash with Response type
+	Prompt      string `json:"prompt"   jsonschema:"title=Prompt,description=Original user prompt"`
+	AgentAnswer string `json:"response" jsonschema:"title=Agent Answer,description=Agent's final answer for this turn"` // named AgentAnswer to avoid clash with Response type
 }
 
 // PostPromptResponseSchema — response hook.
