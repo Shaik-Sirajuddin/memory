@@ -1,10 +1,12 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/adrg/xdg"
 )
@@ -13,6 +15,7 @@ import (
 type OmniConfigResolver interface {
 	GetUserSettings() (*OmniConfig, error)
 	SaveUserSettings(*OmniConfig) error
+	ConfigWatcher
 }
 
 // DefaultOmniConfigResolver implements [OmniConfigResolver].
@@ -20,6 +23,10 @@ type DefaultOmniConfigResolver struct {
 	// ConfigPath is optional and primarily useful for tests.
 	// When empty, an XDG-compliant default path is used.
 	ConfigPath string
+
+	watchMu     sync.Mutex
+	watchCancel context.CancelFunc
+	watchDone   chan struct{}
 }
 
 // UserConfigPath resolves the persisted omni config file location.
