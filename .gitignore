@@ -3,3 +3,4 @@
 .codex
 .gemini
 agent[-_]*.md
+.goreleaser.yaml
