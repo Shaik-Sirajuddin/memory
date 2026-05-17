@@ -16,7 +16,6 @@ import (
 	"syscall"
 
 	ptydaemon "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon"
-	ptylog "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/log"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -65,9 +64,9 @@ func newUnixClient() *UnixSocketClient {
 
 // Pipe sends raw bytes to the PTY master of the given session.
 func (c *UnixSocketClient) Pipe(agentID, sessionID string, data []byte) error {
-	ptylog.Logger.Debug("client: pipe", "agent_id", agentID, "session_id", sessionID, "bytes", len(data))
+	ptylog.Debug("client: pipe", "agent_id", agentID, "session_id", sessionID, "bytes", len(data))
 	if err := c.do(unixRequest{Op: "pipe", AgentID: agentID, SessionID: sessionID, Data: data}); err != nil {
-		ptylog.Logger.Error("client: pipe failed", "err", err, "agent_id", agentID, "session_id", sessionID)
+		ptylog.Error("client: pipe failed", "err", err, "agent_id", agentID, "session_id", sessionID)
 		return err
 	}
 	return nil
@@ -75,9 +74,9 @@ func (c *UnixSocketClient) Pipe(agentID, sessionID string, data []byte) error {
 
 // Register adopts an externally started process into the daemon as a managed session.
 func (c *UnixSocketClient) Register(agentID, sessionID, processID string) error {
-	ptylog.Logger.Debug("client: register", "agent_id", agentID, "session_id", sessionID, "pid", processID)
+	ptylog.Debug("client: register", "agent_id", agentID, "session_id", sessionID, "pid", processID)
 	if agentID == "" || sessionID == "" || processID == "" {
-		ptylog.Logger.Debug("client: register skipped — empty field", "agent_id", agentID, "session_id", sessionID, "pid", processID)
+		ptylog.Debug("client: register skipped — empty field", "agent_id", agentID, "session_id", sessionID, "pid", processID)
 		return nil
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(processID))
@@ -85,29 +84,29 @@ func (c *UnixSocketClient) Register(agentID, sessionID, processID string) error 
 		return fmt.Errorf("ptydaemon/clients: register: invalid pid %q: %w", processID, err)
 	}
 	if err := c.do(unixRequest{Op: "adopt", AgentID: agentID, SessionID: sessionID, PID: pid}); err != nil {
-		ptylog.Logger.Error("client: register failed", "err", err, "agent_id", agentID, "session_id", sessionID, "pid", pid)
+		ptylog.Error("client: register failed", "err", err, "agent_id", agentID, "session_id", sessionID, "pid", pid)
 		return err
 	}
-	ptylog.Logger.Debug("client: register ok", "agent_id", agentID, "session_id", sessionID, "pid", pid)
+	ptylog.Debug("client: register ok", "agent_id", agentID, "session_id", sessionID, "pid", pid)
 	return nil
 }
 
 func (c *UnixSocketClient) List(agentID string) ([]*PTYTerminalInfo, error) {
-	ptylog.Logger.Debug("client: list", "agent_id", agentID)
+	ptylog.Debug("client: list", "agent_id", agentID)
 	resp, conn, err := c.roundtrip(unixRequest{Op: "list"})
 	if conn != nil {
 		conn.Close()
 	}
 	if err != nil {
-		ptylog.Logger.Error("client: list failed", "err", err, "agent_id", agentID)
+		ptylog.Error("client: list failed", "err", err, "agent_id", agentID)
 		return nil, err
 	}
 	if !resp.OK {
-		ptylog.Logger.Error("client: list error response", "error", resp.Error, "agent_id", agentID)
+		ptylog.Error("client: list error response", "error", resp.Error, "agent_id", agentID)
 		return nil, errors.New(resp.Error)
 	}
 	if agentID == "" {
-		ptylog.Logger.Debug("client: list ok", "count", len(resp.Sessions))
+		ptylog.Debug("client: list ok", "count", len(resp.Sessions))
 		return resp.Sessions, nil
 	}
 	var filtered []*PTYTerminalInfo
@@ -116,26 +115,26 @@ func (c *UnixSocketClient) List(agentID string) ([]*PTYTerminalInfo, error) {
 			filtered = append(filtered, info)
 		}
 	}
-	ptylog.Logger.Debug("client: list ok", "agent_id", agentID, "count", len(filtered))
+	ptylog.Debug("client: list ok", "agent_id", agentID, "count", len(filtered))
 	return filtered, nil
 }
 
 func (c *UnixSocketClient) Get(_, sessionID string) (*PTYTerminalInfo, error) {
-	ptylog.Logger.Debug("client: get", "session_id", sessionID)
+	ptylog.Debug("client: get", "session_id", sessionID)
 	resp, conn, err := c.roundtrip(unixRequest{Op: "get", SessionID: sessionID})
 	if conn != nil {
 		conn.Close()
 	}
 	if err != nil {
-		ptylog.Logger.Error("client: get failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: get failed", "err", err, "session_id", sessionID)
 		return nil, err
 	}
 	if !resp.OK {
-		ptylog.Logger.Debug("client: get not found", "session_id", sessionID)
+		ptylog.Debug("client: get not found", "session_id", sessionID)
 		return nil, nil // not found
 	}
 	if len(resp.Sessions) > 0 {
-		ptylog.Logger.Debug("client: get ok", "session_id", sessionID, "status", resp.Sessions[0].Status)
+		ptylog.Debug("client: get ok", "session_id", sessionID, "status", resp.Sessions[0].Status)
 		return resp.Sessions[0], nil
 	}
 	return nil, nil
@@ -146,37 +145,37 @@ func (c *UnixSocketClient) Get(_, sessionID string) (*PTYTerminalInfo, error) {
 // can exec binaries installed in the caller's PATH.
 // dir sets the working directory for the spawned process; empty means inherit daemon cwd.
 func (c *UnixSocketClient) Start(sessionID string, command []string, env []string, dir string) error {
-	ptylog.Logger.Debug("client: start", "session_id", sessionID, "command", command, "dir", dir)
+	ptylog.Debug("client: start", "session_id", sessionID, "command", command, "dir", dir)
 	if len(command) > 0 {
 		original := command[0]
 		if abs, err := exec.LookPath(command[0]); err == nil {
 			command = append([]string{abs}, command[1:]...)
-			ptylog.Logger.Debug("client: start resolved binary", "original", original, "resolved", abs)
+			ptylog.Debug("client: start resolved binary", "original", original, "resolved", abs)
 		} else {
-			ptylog.Logger.Debug("client: start LookPath failed, using original", "command", original, "err", err)
+			ptylog.Debug("client: start LookPath failed, using original", "command", original, "err", err)
 		}
 	}
 	if err := c.do(unixRequest{Op: "start", SessionID: sessionID, Command: command, Env: env, Dir: dir}); err != nil {
-		ptylog.Logger.Error("client: start failed", "err", err, "session_id", sessionID, "command", command)
+		ptylog.Error("client: start failed", "err", err, "session_id", sessionID, "command", command)
 		return err
 	}
-	ptylog.Logger.Debug("client: start ok", "session_id", sessionID, "command", command, "dir", dir)
+	ptylog.Debug("client: start ok", "session_id", sessionID, "command", command, "dir", dir)
 	return nil
 }
 
 func (c *UnixSocketClient) Attach(ctx context.Context, sessionID string) error {
-	ptylog.Logger.Debug("client: attach", "session_id", sessionID, "socket", c.socketPath)
+	ptylog.Debug("client: attach", "session_id", sessionID, "socket", c.socketPath)
 
 	conn, err := net.Dial("unix", c.socketPath)
 	if err != nil {
-		ptylog.Logger.Error("client: attach dial failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: attach dial failed", "err", err, "session_id", sessionID)
 		return err
 	}
 	uc := conn.(*net.UnixConn)
 	defer uc.Close()
 
 	if err := json.NewEncoder(uc).Encode(unixRequest{Op: "attach", SessionID: sessionID}); err != nil {
-		ptylog.Logger.Error("client: attach request failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: attach request failed", "err", err, "session_id", sessionID)
 		return err
 	}
 
@@ -184,105 +183,105 @@ func (c *UnixSocketClient) Attach(ctx context.Context, sessionID string) error {
 	oob := make([]byte, unix.CmsgSpace(4))
 	n, oobn, _, _, err := uc.ReadMsgUnix(buf, oob)
 	if err != nil {
-		ptylog.Logger.Error("client: attach ReadMsgUnix failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: attach ReadMsgUnix failed", "err", err, "session_id", sessionID)
 		return err
 	}
 
 	var resp unixResponse
 	if n == 0 {
-		ptylog.Logger.Error("client: attach empty response", "session_id", sessionID)
+		ptylog.Error("client: attach empty response", "session_id", sessionID)
 		return errors.New("ptydaemon/clients: attach: empty daemon response")
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(buf[:n]), &resp); err != nil {
-		ptylog.Logger.Error("client: attach decode failed", "err", err, "session_id", sessionID, "bytes", n)
+		ptylog.Error("client: attach decode failed", "err", err, "session_id", sessionID, "bytes", n)
 		return err
 	}
 	if !resp.OK {
-		ptylog.Logger.Error("client: attach denied by daemon", "error", resp.Error, "session_id", sessionID)
+		ptylog.Error("client: attach denied by daemon", "error", resp.Error, "session_id", sessionID)
 		return errors.New(resp.Error)
 	}
-	ptylog.Logger.Debug("client: attach accepted by daemon, reading SCM_RIGHTS fd", "session_id", sessionID)
+	ptylog.Debug("client: attach accepted by daemon, reading SCM_RIGHTS fd", "session_id", sessionID)
 
 	scms, err := unix.ParseSocketControlMessage(oob[:oobn])
 	if err != nil || len(scms) == 0 {
-		ptylog.Logger.Error("client: attach no control message", "err", err, "session_id", sessionID)
+		ptylog.Error("client: attach no control message", "err", err, "session_id", sessionID)
 		return errors.New("ptydaemon/clients: attach: no control message received")
 	}
 	fds, err := unix.ParseUnixRights(&scms[0])
 	if err != nil || len(fds) == 0 {
-		ptylog.Logger.Error("client: attach no fd in control message", "err", err, "session_id", sessionID)
+		ptylog.Error("client: attach no fd in control message", "err", err, "session_id", sessionID)
 		return errors.New("ptydaemon/clients: attach: no fd in control message")
 	}
 
-	ptylog.Logger.Debug("client: attach received master fd, entering raw terminal", "session_id", sessionID, "fd", fds[0])
+	ptylog.Debug("client: attach received master fd, entering raw terminal", "session_id", sessionID, "fd", fds[0])
 	ptmx := os.NewFile(uintptr(fds[0]), "ptmx")
 	if err := attachToTerminal(ctx, ptmx); err != nil {
-		ptylog.Logger.Error("client: attach terminal setup failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: attach terminal setup failed", "err", err, "session_id", sessionID)
 		return err
 	}
-	ptylog.Logger.Debug("client: attach terminal io running", "session_id", sessionID)
+	ptylog.Debug("client: attach terminal io running", "session_id", sessionID)
 	return nil
 }
 
 // ListAttached returns all processes holding the PTY master fd of the session.
 func (c *UnixSocketClient) ListAttached(sessionID string) ([]AttachedProcess, error) {
-	ptylog.Logger.Debug("client: list-attached", "session_id", sessionID)
+	ptylog.Debug("client: list-attached", "session_id", sessionID)
 	resp, conn, err := c.roundtrip(unixRequest{Op: "list-attached", SessionID: sessionID})
 	if conn != nil {
 		conn.Close()
 	}
 	if err != nil {
-		ptylog.Logger.Error("client: list-attached failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: list-attached failed", "err", err, "session_id", sessionID)
 		return nil, err
 	}
 	if !resp.OK {
-		ptylog.Logger.Error("client: list-attached error response", "error", resp.Error, "session_id", sessionID)
+		ptylog.Error("client: list-attached error response", "error", resp.Error, "session_id", sessionID)
 		return nil, errors.New(resp.Error)
 	}
 	procs := make([]AttachedProcess, 0, len(resp.Processes))
 	for _, p := range resp.Processes {
 		procs = append(procs, AttachedProcess{PID: p.PID, Comm: p.Comm, Fd: p.Fd})
 	}
-	ptylog.Logger.Debug("client: list-attached ok", "session_id", sessionID, "count", len(procs))
+	ptylog.Debug("client: list-attached ok", "session_id", sessionID, "count", len(procs))
 	return procs, nil
 }
 
 // MetaAttached returns the count of processes holding the PTY master fd.
 func (c *UnixSocketClient) MetaAttached(sessionID string) (int, error) {
-	ptylog.Logger.Debug("client: meta-attached", "session_id", sessionID)
+	ptylog.Debug("client: meta-attached", "session_id", sessionID)
 	resp, conn, err := c.roundtrip(unixRequest{Op: "meta-attached", SessionID: sessionID})
 	if conn != nil {
 		conn.Close()
 	}
 	if err != nil {
-		ptylog.Logger.Error("client: meta-attached failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: meta-attached failed", "err", err, "session_id", sessionID)
 		return 0, err
 	}
 	if !resp.OK {
-		ptylog.Logger.Error("client: meta-attached error response", "error", resp.Error, "session_id", sessionID)
+		ptylog.Error("client: meta-attached error response", "error", resp.Error, "session_id", sessionID)
 		return 0, errors.New(resp.Error)
 	}
-	ptylog.Logger.Debug("client: meta-attached ok", "session_id", sessionID, "count", resp.Count)
+	ptylog.Debug("client: meta-attached ok", "session_id", sessionID, "count", resp.Count)
 	return resp.Count, nil
 }
 
 // Exec writes raw input bytes to the PTY master.
 func (c *UnixSocketClient) Exec(sessionID, input string) error {
-	ptylog.Logger.Debug("client: exec", "session_id", sessionID, "input_len", len(input))
+	ptylog.Debug("client: exec", "session_id", sessionID, "input_len", len(input))
 	if err := c.do(unixRequest{Op: "exec", SessionID: sessionID, Input: input}); err != nil {
-		ptylog.Logger.Error("client: exec failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: exec failed", "err", err, "session_id", sessionID)
 		return err
 	}
 	return nil
 }
 
 func (c *UnixSocketClient) Stop(sessionID string) error {
-	ptylog.Logger.Debug("client: stop", "session_id", sessionID)
+	ptylog.Debug("client: stop", "session_id", sessionID)
 	if err := c.do(unixRequest{Op: "stop", SessionID: sessionID}); err != nil {
-		ptylog.Logger.Error("client: stop failed", "err", err, "session_id", sessionID)
+		ptylog.Error("client: stop failed", "err", err, "session_id", sessionID)
 		return err
 	}
-	ptylog.Logger.Debug("client: stop ok", "session_id", sessionID)
+	ptylog.Debug("client: stop ok", "session_id", sessionID)
 	return nil
 }
 

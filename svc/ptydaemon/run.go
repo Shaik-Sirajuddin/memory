@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/internal"
-	ptylog "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/log"
 	"github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/ptyunix"
 )
 
@@ -46,7 +45,7 @@ func Run(ctx context.Context, socketPath, dbPath string) error {
 
 	select {
 	case <-ctx.Done():
-		ptylog.Logger.Info("ptydaemon: shutdown signal received")
+		ptylog.Info("ptydaemon: shutdown signal received")
 	case err := <-errCh:
 		return err
 	}
@@ -55,7 +54,7 @@ func Run(ctx context.Context, socketPath, dbPath string) error {
 	defer cancel()
 
 	if err := daemon.Shutdown(shutdownCtx); err != nil {
-		ptylog.Logger.Error("ptydaemon: shutdown error", "err", err)
+		ptylog.Error("ptydaemon: shutdown error", "err", err)
 	}
 	return nil
 }
