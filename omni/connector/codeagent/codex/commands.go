@@ -11,18 +11,13 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
-	"github.com/creack/pty"
-	"golang.org/x/term"
 )
 
 const (
@@ -93,11 +88,14 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 	if p.SessionID != "" {
 		logger.Info("Create: attaching to existing session via resume", "sessionID", p.SessionID)
 		if attachErr := verifySessionExists(workDir, binPath, p.SessionID); attachErr != nil {
-			logger.Warn("Create: supplied session ID not found in codex store, falling back to bootstrap", "sessionID", p.SessionID, "err", attachErr)
-		} else {
-			sessionID = p.SessionID
-			logger.Info("Create: attached to existing session", "sessionID", sessionID)
+			return nil, fmt.Errorf("codex: create: attach existing session %q: %w", p.SessionID, attachErr)
 		}
+		sessionID = p.SessionID
+		a.mu.Lock()
+		a.sessionID = sessionID
+		a.mu.Unlock()
+		logger.Info("Create: attached to existing session", "sessionID", sessionID, "workDir", workDir)
+		return &codeagent.CreateSessionResult{ID: sessionID, Name: p.Name}, nil
 	}
 
 	if sessionID == "" {
@@ -232,10 +230,19 @@ func parseBootstrapSessionID(output string) string {
 	return ""
 }
 
+type ptyMetaAttached interface {
+	MetaAttached(sessionID string) (int, error)
+}
+
 func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
+	ctx := p.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Block if a PTY session is already live.
 	a.mu.RLock()
-	live := a.masterPTY != nil
+	live := a.masterPTY != nil || a.writeCh != nil
 	a.mu.RUnlock()
 	if live {
 		return nil, errors.New("codex: PTY session already active; stop it before resuming")
@@ -246,9 +253,18 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 	workDir := a.workDir
 	rt := a.sbxRuntime
 	ptyClient := a.ptyClient
+	currentSessionID := a.sessionID
 	a.mu.RUnlock()
 	if p.RunTime != nil {
 		rt = *p.RunTime
+	}
+
+	resolvedSessionID := strings.TrimSpace(p.ID)
+	if p.SessionID != "" {
+		resolvedSessionID = strings.TrimSpace(p.SessionID)
+	}
+	if resolvedSessionID == "" {
+		resolvedSessionID = strings.TrimSpace(currentSessionID)
 	}
 
 	cmdName := "resume"
@@ -257,10 +273,11 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 	}
 
 	args := []string{cmdName, "-C", workDir}
-	if p.ID != "" {
-		args = append(args, p.ID)
+	if resolvedSessionID != "" {
+		args = append(args, resolvedSessionID)
 	} else {
 		args = append(args, "--last")
+		resolvedSessionID = "last"
 	}
 
 	logger.Info("Resume: running command", "bin", binPath, "args", args)
@@ -270,111 +287,90 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 			return nil, fmt.Errorf("codex: resume: sandbox command: %w", err)
 		}
 		pid := runtimePID(rt)
-		resolvedSessionID := p.ID
-		if resolvedSessionID == "" {
-			resolvedSessionID = "last"
-		}
 		logger.Info("Resume: interactive sandbox session completed", "pid", pid, "sessionID", resolvedSessionID, "fork", p.ForkSession)
 		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
 	}
 
-	resolvedSessionID := p.ID
-	if resolvedSessionID == "" {
-		resolvedSessionID = "last"
-	}
-
-	// PTY mode: full I/O bridge so the user sees output and can type, while
-	// ExecInSession can inject prompts via the same serialised write channel.
 	if ptyClient != nil {
-		cmd := exec.Command(binPath, args...)
-		cmd.Dir = workDir
-		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-
-		master, err := pty.Start(cmd)
-		if err != nil {
-			return nil, fmt.Errorf("codex: resume: pty start: %w", err)
-		}
-
-		// Propagate terminal resize events to the PTY.
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGWINCH)
-		go func() {
-			for range sigCh {
-				_ = pty.InheritSize(os.Stdin, master)
+		var (
+			info *codeagent.PTYTerminalInfo
+			err  error
+		)
+		if resolvedSessionID == "last" {
+			infos, listErr := ptyClient.List(string(Codex))
+			if listErr != nil {
+				return nil, fmt.Errorf("codex: resume: pty list: %w", listErr)
 			}
-		}()
-		sigCh <- syscall.SIGWINCH // set initial size
-
-		// Switch stdin to raw mode so keystrokes go straight through.
-		var oldState *term.State
-		if st, err := term.MakeRaw(int(os.Stdin.Fd())); err != nil {
-			logger.Warn("Resume: raw mode unavailable", "err", err)
+			active := make([]*codeagent.PTYTerminalInfo, 0, len(infos))
+			for _, candidate := range infos {
+				if candidate != nil && candidate.Status == "active" {
+					active = append(active, candidate)
+				}
+			}
+			if len(active) == 1 {
+				info = active[0]
+				resolvedSessionID = info.SessionID
+			}
 		} else {
-			oldState = st
+			info, err = ptyClient.Get(string(Codex), resolvedSessionID)
+			if err != nil {
+				return nil, fmt.Errorf("codex: resume: pty get %q: %w", resolvedSessionID, err)
+			}
 		}
-
-		// Serialised write channel — both keyboard input and ExecInSession use it.
-		wch := make(chan []byte, 128)
+		if meta, ok := ptyClient.(ptyMetaAttached); ok {
+			count, err := meta.MetaAttached(resolvedSessionID)
+			if err != nil {
+				logger.Warn("Resume: PTY attached count unavailable", "sessionID", resolvedSessionID, "err", err)
+			} else if count > 1 {
+				return nil, errors.New("codex: resume: PTY session already has an interactive user attached")
+			}
+		}
+		command := append([]string{binPath}, args...)
+		started := false
+		if info == nil || info.Status != "active" {
+			if err := ptyClient.Start(resolvedSessionID, command, os.Environ(), workDir); err != nil {
+				return nil, fmt.Errorf("codex: resume: pty start: %w", err)
+			}
+			started = true
+		}
 		a.mu.Lock()
-		a.masterPTY = master
-		a.writeCh = wch
-		a.activeCmd = cmd
+		a.sessionID = resolvedSessionID
+		a.writeCh = make(chan []byte, 1)
+		a.activeCmd = nil
 		a.mu.Unlock()
-
-		// Single writer goroutine: drains wch and writes to PTY master.
+		done := make(chan error, 1)
 		go func() {
-			for chunk := range wch {
-				_, _ = master.Write(chunk)
+			defer close(done)
+			if err := ptyClient.Attach(ctx, resolvedSessionID); err != nil {
+				err = fmt.Errorf("codex: resume: pty attach: %w", err)
+				logger.Warn("Resume: PTY attach ended with error", "sessionID", resolvedSessionID, "err", err)
+				done <- err
+			} else {
+				logger.Info("Resume: PTY daemon session detached", "sessionID", resolvedSessionID)
+				done <- nil
 			}
-		}()
-
-		// Bridge PTY master → stdout so the user sees codex's output.
-		go func() { _, _ = io.Copy(os.Stdout, master) }()
-
-		// Bridge stdin → wch so the user can type.
-		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := os.Stdin.Read(buf)
-				if n > 0 {
-					wch <- append([]byte(nil), buf[:n]...)
-				}
-				if err != nil {
-					return
-				}
-			}
-		}()
-
-		pid := strconv.Itoa(cmd.Process.Pid)
-		logger.Info("Resume: PTY session started", "pid", pid, "sessionID", resolvedSessionID)
-
-		done := make(chan struct{})
-
-		// Cleanup goroutine: restores terminal state and notifies daemon on exit.
-		go func() {
-			_ = cmd.Wait()
-			signal.Stop(sigCh)
-			close(sigCh)
-			if oldState != nil {
-				_ = term.Restore(int(os.Stdin.Fd()), oldState)
-			}
-			close(wch)
 			a.mu.Lock()
 			a.masterPTY = nil
+			if a.writeCh != nil {
+				close(a.writeCh)
+			}
 			a.writeCh = nil
 			a.mu.Unlock()
-			if s, ok := ptyClient.(interface{ Stop(string) error }); ok {
-				_ = s.Stop(resolvedSessionID)
+			if started {
+				_ = ptyClient.Stop(resolvedSessionID)
 			}
 			logger.Debug("Resume: PTY session terminated", "sessionID", resolvedSessionID)
-			close(done)
 		}()
-
-		<-done
-		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resolvedSessionID}, nil
+		if started {
+			logger.Info("Resume: PTY daemon session started", "sessionID", resolvedSessionID)
+		} else {
+			logger.Info("Resume: attached to active PTY daemon session", "sessionID", resolvedSessionID)
+		}
+		logger.Info("Resume: attaching PTY daemon session", "sessionID", resolvedSessionID)
+		return &codeagent.ResumeSessionResult{ProcessID: "", SessionID: resolvedSessionID, Done: done}, nil
 	}
 
-	pid, _ := a.attachAndRun(binPath, workDir, args)
+	pid, _ := a.attachAndRun(ctx, binPath, workDir, args)
 	// TODO: re-enable new-session fallback once bootstrap reliably returns a real session ID
 	// if runErr != nil {
 	// 	logger.Warn("Resume: session not found, falling back to new session", "sessionID", resolvedSessionID, "err", runErr)
@@ -389,8 +385,8 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 
 // attachAndRun starts binPath with args attached to the terminal and blocks
 // until the process exits. Returns the pid string and the exit error (nil = clean exit).
-func (a *codexAgent) attachAndRun(binPath, workDir string, args []string) (pid string, err error) {
-	cmd := exec.Command(binPath, args...)
+func (a *codexAgent) attachAndRun(ctx context.Context, binPath, workDir string, args []string) (pid string, err error) {
+	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = workDir
 
 	// Prefer injectable streams (set by tests). In production, open /dev/tty
@@ -436,14 +432,9 @@ func (a *codexAgent) attachAndRun(binPath, workDir string, args []string) (pid s
 // ExecInSession
 // ============================================================
 
-// ExecInSession writes a prompt into an active interactive PTY session managed
-// by the PTY daemon. It is fire-and-forget: it returns immediately without
-// waiting for a response.
-//
-// Payload: ctrlU + pasteStart + prompt + pasteEnd + submitKey
+// ExecInSession writes a prompt into an active interactive PTY session.
 func (a *codexAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
 	a.mu.RLock()
-	wch := a.writeCh
 	client := a.ptyClient
 	agentID := a.sessionID
 	a.mu.RUnlock()
@@ -456,20 +447,13 @@ func (a *codexAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.
 		return nil, fmt.Errorf("codex: ExecInSession: no session ID")
 	}
 
-	payload := []byte("\x15\x1b[200~" + p.Prompt + "\x1b[201~" + submitKey)
-
-	switch {
-	case wch != nil:
-		wch <- payload
-	case client != nil:
-		if err := client.Pipe(agentID, sid, payload); err != nil {
-			return nil, fmt.Errorf("codex: ExecInSession: session not live: %w", err)
-		}
-	default:
+	if client == nil {
 		return nil, fmt.Errorf("codex: ExecInSession: no active PTY session")
 	}
-
-	logger.Info("ExecInSession: prompt sent", "sessionID", sid, "promptLen", len(p.Prompt))
+	if err := client.Exec(sid, p.Prompt); err != nil {
+		return nil, fmt.Errorf("codex: ExecInSession: session not live: %w", err)
+	}
+	logger.Info("ExecInSession: prompt delegated", "agentID", agentID, "sessionID", sid, "promptLen", len(p.Prompt))
 	return &codeagent.ExecInSessionResult{SessionID: sid}, nil
 }
 
@@ -553,9 +537,25 @@ func (a *codexAgent) Delete(p codeagent.DeleteSessionParams) (*codeagent.DeleteS
 func (a *codexAgent) Stop() {
 	a.mu.Lock()
 	cmd := a.activeCmd
+	writeChLive := a.writeCh != nil
+	client := a.ptyClient
+	sessionID := a.sessionID
 	a.activeCmd = nil
+	if a.writeCh != nil {
+		close(a.writeCh)
+		a.writeCh = nil
+	}
+	a.masterPTY = nil
 	a.mu.Unlock()
 
+	if writeChLive && client != nil {
+		if err := client.Stop(sessionID); err != nil {
+			logger.Warn("Stop: failed to stop PTY daemon session", "sessionID", sessionID, "err", err)
+		} else {
+			logger.Info("Stop: PTY daemon session terminated", "sessionID", sessionID)
+		}
+		return
+	}
 	if cmd == nil || cmd.Process == nil {
 		logger.Info("Stop: no active codex process")
 		return
