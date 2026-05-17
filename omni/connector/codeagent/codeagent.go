@@ -1,6 +1,10 @@
 package codeagent
 
 import (
+	"context"
+
+	"github.com/Shaik-Sirajuddin/memory/config"
+	confhooks "github.com/Shaik-Sirajuddin/memory/config/hooks"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 )
 
@@ -94,10 +98,42 @@ type DiscoverResult struct {
 	Models []ModelID
 }
 
+type PTYTerminalInfo struct {
+	AgentID   string
+	SessionID string
+	Status    string
+}
+
 // PTYClient is the minimal interface each connector needs to send
 // prompts into an active PTY session via the PTY daemon.
 type PTYClient interface {
 	Pipe(agentID, sessionID string, data []byte) error
+	Start(sessionID string, command []string, env []string, dir string) error
+	Attach(ctx context.Context, sessionID string) error
+	Exec(sessionID, input string) error
+	Stop(sessionID string) error
+	List(agentID string) ([]*PTYTerminalInfo, error)
+	Get(agentID, sessionID string) (*PTYTerminalInfo, error)
+}
+
+// HookTransformer translates between omni-layer hooks and codeagent-specific formats.
+// Each connector (claude, codex, gemini) provides its own implementation.
+type HookTransformer interface {
+	// Add registers a hook by name. Returns false without storing if name already exists.
+	// Key = exact name string (case-sensitive). No update — remove then re-add.
+	Add(name string, entry config.HookEntry) bool
+
+	// GetHooks returns all registered hooks in insertion order.
+	// Hook.Schemas is the concrete *EventSchema for type assertion.
+	GetHooks() []confhooks.Hook
+
+	// GetHookResponse parses a codeagent-specific payload and returns what omni
+	// sends back to the codeagent. Covers all 7 events.
+	GetHookResponse(eventName string, payload any) (confhooks.HookResponseSchema, error)
+
+	// GetHookResult parses a hook command's stdout into the canonical result.
+	// Covers all 7 events.
+	GetHookResult(eventName string, raw any) (confhooks.HookResultSchema, error)
 }
 
 // CodeAgent implements Model
@@ -115,6 +151,9 @@ type CodeAgent interface {
 	// Stream runs a prompt and returns a channel of incremental events.
 	Stream(StreamParams) (*StreamResult, error)
 	// Resume the session and return the process ID; defaults to interactive.
+	// When PTYClient is set: connector calls PTYClient.Start then PTYClient.Attach
+	// (blocking until terminal detaches). Operator must not call Start/Attach separately.
+	// When PTYClient is nil: blocking /dev/tty mode.
 	Resume(ResumeSessionParams) (*ResumeSessionResult, error)
 	// List returns persisted sessions matching the given filter.
 	List(ListSessionsParams) (*ListSessionsResult, error)
