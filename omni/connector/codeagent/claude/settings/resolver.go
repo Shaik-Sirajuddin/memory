@@ -92,6 +92,60 @@ func readRawFile(path string) (rawFile, error) {
 	return f, nil
 }
 
+// ReadUserSettingsRaw reads the first-resolved user settings file as raw JSON.
+// Missing settings files return an empty map.
+func ReadUserSettingsRaw() (map[string]json.RawMessage, error) {
+	path, err := UserSettingsPath()
+	if err != nil {
+		return nil, err
+	}
+	return readSettingsRaw(path)
+}
+
+// UpdateUserSettingsRaw preserves unrelated keys while applying update to the
+// first-resolved user settings file.
+func UpdateUserSettingsRaw(update func(map[string]json.RawMessage) error) error {
+	path, err := UserSettingsPath()
+	if err != nil {
+		return err
+	}
+	raw, err := readSettingsRaw(path)
+	if err != nil {
+		return err
+	}
+	if update != nil {
+		if err := update(raw); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("settings: marshal %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("settings: mkdir %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("settings: write %s: %w", path, err)
+	}
+	return nil
+}
+
+func readSettingsRaw(path string) (map[string]json.RawMessage, error) {
+	raw := map[string]json.RawMessage{}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return raw, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("settings: read %s: %w", path, err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("settings: decode raw %s: %w", path, err)
+	}
+	return raw, nil
+}
+
 // mergeAndWrite reads the existing settings.json at path as a raw map,
 // applies key transformations from s, then writes it back.
 // All unrelated keys in the file are preserved.
