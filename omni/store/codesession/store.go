@@ -14,6 +14,10 @@ var (
 	sessionStoreOnce sync.Once
 	sessionStore     *sqlCodeSessionStore
 	sessionStoreErr  error
+
+	readOnlySessionStoreOnce sync.Once
+	readOnlySessionStore     CodeSessionStore
+	readOnlySessionStoreErr  error
 )
 
 // NewWithDB creates a CodeSessionStore backed by the provided database. Used in tests.
@@ -34,10 +38,83 @@ func GetCodeSessionStore() (CodeSessionStore, error) {
 	return sessionStore, sessionStoreErr
 }
 
+// GetReadOnlyCodeSessionStore returns a singleton read-only CodeSessionStore.
+//
+// This is intended for viewers, inspectors, dashboards, or CLI commands that only
+// need to read existing session data.
+//
+// It opens the SQLite database with mode=ro, so:
+//   - the DB file must already exist
+//   - writes will fail
+//   - schema migrations are not applied here
+//
+// Use GetCodeSessionStore for normal read/write app usage.
+func GetReadOnlyCodeSessionStore() (CodeSessionStore, error) {
+	readOnlySessionStoreOnce.Do(func() {
+		db, err := database.GetReadOnlyDB()
+		if err != nil {
+			readOnlySessionStoreErr = err
+			return
+		}
+
+		readOnlySessionStore = &sqlCodeSessionStore{db: db}
+	})
+
+	return readOnlySessionStore, readOnlySessionStoreErr
+}
+
+// GetSessionByID looks up a session by its own ID and returns the owning agentID.
+func (s *sqlCodeSessionStore) GetSessionByID(sessionID string) (string, *omniagent.CodeSession, error) {
+	var agentID string
+	row := s.db.QueryRow(
+		`SELECT agent_id, id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt,
+		        status, stop_reason,
+		        tokens_input, tokens_output, tokens_cached_input, tokens_cached_output,
+		        tokens_max, tokens_consumed_percent
+		 FROM code_sessions WHERE id = ? LIMIT 1`,
+		sessionID,
+	)
+	var (
+		id, provider, modelName           string
+		idx, prompts, lastSync            int
+		isActive                          int
+		status, stopReason                string
+		tokIn, tokOut, tokCIn, tokCOut, tokMax int
+		tokPct                            float64
+	)
+	if err := row.Scan(
+		&agentID, &id, &provider, &modelName, &idx, &isActive, &prompts, &lastSync,
+		&status, &stopReason,
+		&tokIn, &tokOut, &tokCIn, &tokCOut, &tokMax, &tokPct,
+	); err != nil {
+		return "", nil, err
+	}
+	session := &omniagent.CodeSession{
+		Id:                 id,
+		Model:              utils.BuildModel(provider, modelName),
+		Idx:                idx,
+		IsActive:           isActive == 1,
+		Prompts:            prompts,
+		LastSyncPrompt:     lastSync,
+		Status:             status,
+		StopReason:         stopReason,
+		TokensInput:        tokIn,
+		TokensOutput:       tokOut,
+		TokensCachedInput:  tokCIn,
+		TokensCachedOutput: tokCOut,
+		TokensMax:          tokMax,
+		TokensConsumedPct:  tokPct,
+	}
+	return agentID, session, nil
+}
+
 // GetSession returns the active session for the given agent.
 func (s *sqlCodeSessionStore) GetSession(agentID string) (*omniagent.CodeSession, error) {
 	row := s.db.QueryRow(
-		`SELECT id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt
+		`SELECT id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt,
+		        status, stop_reason,
+		        tokens_input, tokens_output, tokens_cached_input, tokens_cached_output,
+		        tokens_max, tokens_consumed_percent
 		 FROM code_sessions WHERE agent_id = ? AND is_active = 1 LIMIT 1`,
 		agentID,
 	)
@@ -47,11 +124,22 @@ func (s *sqlCodeSessionStore) GetSession(agentID string) (*omniagent.CodeSession
 // CreateSession persists a new session for the given agent.
 func (s *sqlCodeSessionStore) CreateSession(agentID string, session *omniagent.CodeSession) error {
 	provider, name := utils.ModelFields(session.Model)
+	status := session.Status
+	if status == "" {
+		status = "ready"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO code_sessions (id, agent_id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO code_sessions
+		 (id, agent_id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt,
+		  status, stop_reason,
+		  tokens_input, tokens_output, tokens_cached_input, tokens_cached_output,
+		  tokens_max, tokens_consumed_percent)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.Id, agentID, provider, name,
 		session.Idx, utils.BoolToInt(session.IsActive), session.Prompts, session.LastSyncPrompt,
+		status, session.StopReason,
+		session.TokensInput, session.TokensOutput, session.TokensCachedInput, session.TokensCachedOutput,
+		session.TokensMax, session.TokensConsumedPct,
 	)
 	return err
 }
@@ -61,9 +149,15 @@ func (s *sqlCodeSessionStore) UpdateSession(agentID string, session *omniagent.C
 	provider, name := utils.ModelFields(session.Model)
 	res, err := s.db.Exec(
 		`UPDATE code_sessions
-		 SET model_provider = ?, model_name = ?, idx = ?, is_active = ?, prompts = ?, last_sync_prompt = ?
+		 SET model_provider = ?, model_name = ?, idx = ?, is_active = ?, prompts = ?, last_sync_prompt = ?,
+		     status = ?, stop_reason = ?,
+		     tokens_input = ?, tokens_output = ?, tokens_cached_input = ?, tokens_cached_output = ?,
+		     tokens_max = ?, tokens_consumed_percent = ?
 		 WHERE id = ? AND agent_id = ?`,
 		provider, name, session.Idx, utils.BoolToInt(session.IsActive), session.Prompts, session.LastSyncPrompt,
+		session.Status, session.StopReason,
+		session.TokensInput, session.TokensOutput, session.TokensCachedInput, session.TokensCachedOutput,
+		session.TokensMax, session.TokensConsumedPct,
 		session.Id, agentID,
 	)
 	if err != nil {
@@ -81,7 +175,10 @@ func (s *sqlCodeSessionStore) UpdateSession(agentID string, session *omniagent.C
 
 // ListSessions returns sessions for the given agent, filtered by non-zero fields of filter.
 func (s *sqlCodeSessionStore) ListSessions(agentID string, filter *omniagent.CodeSession) ([]*omniagent.CodeSession, error) {
-	query := `SELECT id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt
+	query := `SELECT id, model_provider, model_name, idx, is_active, prompts, last_sync_prompt,
+	                 status, stop_reason,
+	                 tokens_input, tokens_output, tokens_cached_input, tokens_cached_output,
+	                 tokens_max, tokens_consumed_percent
 	          FROM code_sessions WHERE agent_id = ?`
 	args := []any{agentID}
 
@@ -116,38 +213,68 @@ func (s *sqlCodeSessionStore) ListSessions(agentID string, filter *omniagent.Cod
 
 func scanSession(row *sql.Row) (*omniagent.CodeSession, error) {
 	var (
-		id, provider, modelName string
-		idx, prompts, lastSync  int
-		isActive                int
+		id, provider, modelName   string
+		idx, prompts, lastSync    int
+		isActive                  int
+		status, stopReason        string
+		tokIn, tokOut, tokCIn, tokCOut, tokMax int
+		tokPct                    float64
 	)
-	if err := row.Scan(&id, &provider, &modelName, &idx, &isActive, &prompts, &lastSync); err != nil {
+	if err := row.Scan(
+		&id, &provider, &modelName, &idx, &isActive, &prompts, &lastSync,
+		&status, &stopReason,
+		&tokIn, &tokOut, &tokCIn, &tokCOut, &tokMax, &tokPct,
+	); err != nil {
 		return nil, err
 	}
 	return &omniagent.CodeSession{
-		Id:             id,
-		Model:          utils.BuildModel(provider, modelName),
-		Idx:            idx,
-		IsActive:       isActive == 1,
-		Prompts:        prompts,
-		LastSyncPrompt: lastSync,
+		Id:                 id,
+		Model:              utils.BuildModel(provider, modelName),
+		Idx:                idx,
+		IsActive:           isActive == 1,
+		Prompts:            prompts,
+		LastSyncPrompt:     lastSync,
+		Status:             status,
+		StopReason:         stopReason,
+		TokensInput:        tokIn,
+		TokensOutput:       tokOut,
+		TokensCachedInput:  tokCIn,
+		TokensCachedOutput: tokCOut,
+		TokensMax:          tokMax,
+		TokensConsumedPct:  tokPct,
 	}, nil
 }
 
 func scanSessionRow(rows *sql.Rows) (*omniagent.CodeSession, error) {
 	var (
-		id, provider, modelName string
-		idx, prompts, lastSync  int
-		isActive                int
+		id, provider, modelName   string
+		idx, prompts, lastSync    int
+		isActive                  int
+		status, stopReason        string
+		tokIn, tokOut, tokCIn, tokCOut, tokMax int
+		tokPct                    float64
 	)
-	if err := rows.Scan(&id, &provider, &modelName, &idx, &isActive, &prompts, &lastSync); err != nil {
+	if err := rows.Scan(
+		&id, &provider, &modelName, &idx, &isActive, &prompts, &lastSync,
+		&status, &stopReason,
+		&tokIn, &tokOut, &tokCIn, &tokCOut, &tokMax, &tokPct,
+	); err != nil {
 		return nil, err
 	}
 	return &omniagent.CodeSession{
-		Id:             id,
-		Model:          utils.BuildModel(provider, modelName),
-		Idx:            idx,
-		IsActive:       isActive == 1,
-		Prompts:        prompts,
-		LastSyncPrompt: lastSync,
+		Id:                 id,
+		Model:              utils.BuildModel(provider, modelName),
+		Idx:                idx,
+		IsActive:           isActive == 1,
+		Prompts:            prompts,
+		LastSyncPrompt:     lastSync,
+		Status:             status,
+		StopReason:         stopReason,
+		TokensInput:        tokIn,
+		TokensOutput:       tokOut,
+		TokensCachedInput:  tokCIn,
+		TokensCachedOutput: tokCOut,
+		TokensMax:          tokMax,
+		TokensConsumedPct:  tokPct,
 	}, nil
 }
