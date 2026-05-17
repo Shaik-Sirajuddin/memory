@@ -3,7 +3,7 @@ package impl
 import (
 	"log/slog"
 
-	applog "github.com/Shaik-Sirajuddin/memory/log"
+	applog "github.com/Shaik-Sirajuddin/memory/pkg/log"
 )
 
 var logger = newLogger()
