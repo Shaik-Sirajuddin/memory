@@ -33,6 +33,7 @@ type PTYCreateParams struct {
 	Args      []string `json:"args"`
 	SubmitKey string   `json:"submit_key"`
 	Env       []string `json:"env"`
+	Dir       string   `json:"dir"` // working directory for the spawned process
 }
 
 type PTYTerminalInfo struct {

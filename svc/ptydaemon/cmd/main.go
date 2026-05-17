@@ -2,64 +2,30 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
+	"os/user"
 	"syscall"
-	"time"
 
-	"github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/internal"
+	ptydaemon "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon"
+	ptylog "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/log"
 )
 
 func main() {
-	socketPath := envOr("PTYDAEMON_SOCKET", "/tmp/ptydaemon.sock")
-	dbPath := envOr("PTYDAEMON_DB", "/tmp/ptydaemon.db")
+	socketPath := ptydaemon.DefaultSocketPath()
+	dbPath := envOr("PTYDAEMON_DB", "/var/lib/omni-"+currentUsername()+"/ptydaemon.db")
 
-	store, err := internal.NewStore(dbPath)
-	if err != nil {
-		log.Fatalf("store: %v", err)
-	}
-	defer store.Close()
-
-	daemon := internal.NewDaemon(store)
-
-	_ = os.Remove(socketPath)
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		log.Fatalf("listen: %v", err)
-	}
-	defer ln.Close()
-
-	srv := &http.Server{Handler: internal.NewHandler(daemon)}
+	ptylog.Logger.Info("ptydaemon starting", "socket", socketPath, "db", dbPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 1)
-	go func() {
-		fmt.Printf("ptydaemon listening on %s\n", socketPath)
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-	case err := <-errCh:
-		log.Fatalf("serve: %v", err)
+	if err := ptydaemon.Run(ctx, socketPath, dbPath); err != nil {
+		ptylog.Logger.Error("ptydaemon error", "err", err)
+		os.Exit(1)
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_ = daemon.Shutdown(shutdownCtx)
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
-	}
+	ptylog.Logger.Info("ptydaemon stopped")
 }
 
 func envOr(key, def string) string {
@@ -67,4 +33,14 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func currentUsername() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if v := os.Getenv("USER"); v != "" {
+		return v
+	}
+	return "pty"
 }

@@ -19,6 +19,8 @@ func NewHandler(d PTYDaemon) http.Handler {
 	mux.HandleFunc("GET /list", handleList(d))
 	mux.HandleFunc("GET /status", handleStatus(d))
 	mux.HandleFunc("POST /adopt", handleAdopt(d))
+	mux.HandleFunc("GET /sessions", handleListSessions(d))
+	mux.HandleFunc("GET /session", handleGetSession(d))
 	return mux
 }
 
@@ -172,6 +174,67 @@ func handleStatus(d PTYDaemon) http.HandlerFunc {
 			Active:   active,
 		}
 		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+type sessionResponse struct {
+	AgentID   string  `json:"agent_id"`
+	SessionID string  `json:"session_id"`
+	PID       int     `json:"pid"`
+	Status    string  `json:"status"`
+	StartedAt string  `json:"started_at"`
+	StoppedAt *string `json:"stopped_at,omitempty"`
+}
+
+func toSessionResponse(rec *PTYSessionRecord) sessionResponse {
+	r := sessionResponse{
+		AgentID:   rec.AgentID,
+		SessionID: rec.SessionID,
+		PID:       rec.PID,
+		Status:    string(rec.Status),
+		StartedAt: rec.StartedAt.UTC().Format(time.RFC3339),
+	}
+	if rec.StoppedAt != nil {
+		s := rec.StoppedAt.UTC().Format(time.RFC3339)
+		r.StoppedAt = &s
+	}
+	return r
+}
+
+func handleListSessions(d PTYDaemon) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentID := r.URL.Query().Get("agent_id")
+		records, err := d.ListSessions(agentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		resp := make([]sessionResponse, 0, len(records))
+		for _, rec := range records {
+			resp = append(resp, toSessionResponse(rec))
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func handleGetSession(d PTYDaemon) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentID := r.URL.Query().Get("agent_id")
+		sessionID := r.URL.Query().Get("session_id")
+		if agentID == "" || sessionID == "" {
+			http.Error(w, "agent_id and session_id are required", http.StatusBadRequest)
+			return
+		}
+		rec, err := d.GetSession(agentID, sessionID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if rec == nil {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, toSessionResponse(rec))
 	}
 }
 
