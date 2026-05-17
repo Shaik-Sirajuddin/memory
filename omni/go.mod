@@ -3,6 +3,7 @@ module github.com/Shaik-Sirajuddin/memory
 go 1.26.1
 
 require (
+	github.com/Shaik-Sirajuddin/memory/pkg/log v0.0.0
 	github.com/Shaik-Sirajuddin/memory/svc/ptydaemon v0.0.0
 	github.com/adrg/xdg v0.5.3
 	github.com/creack/pty v1.1.24
@@ -46,6 +47,8 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/Shaik-Sirajuddin/memory/pkg/log => ../pkg/log
 
 replace github.com/Shaik-Sirajuddin/memory/svc/ptydaemon => ../svc/ptydaemon
 

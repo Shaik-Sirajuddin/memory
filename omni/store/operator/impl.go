@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Shaik-Sirajuddin/memory/log"
+	"github.com/Shaik-Sirajuddin/memory/pkg/log"
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
 	"github.com/Shaik-Sirajuddin/memory/operator"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
