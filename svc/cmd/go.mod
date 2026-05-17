@@ -3,6 +3,7 @@ module github.com/Shaik-Sirajuddin/memory/svc/cmd
 go 1.26.1
 
 require (
+	github.com/Shaik-Sirajuddin/memory/pkg/log v0.0.0
 	github.com/Shaik-Sirajuddin/memory/svc/hook-operator v0.0.0
 	github.com/Shaik-Sirajuddin/memory/svc/ptydaemon v0.0.0
 )
@@ -33,6 +34,7 @@ require (
 
 replace (
 	github.com/Shaik-Sirajuddin/memory => ../../omni
+	github.com/Shaik-Sirajuddin/memory/pkg/log => ../../pkg/log
 	github.com/Shaik-Sirajuddin/memory/svc/hook-operator => ../hook-operator
 	github.com/Shaik-Sirajuddin/memory/svc/ptydaemon => ../ptydaemon
 )

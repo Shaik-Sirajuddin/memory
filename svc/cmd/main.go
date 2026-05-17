@@ -9,7 +9,7 @@ import (
 	"os/user"
 	"syscall"
 
-	omnilog "github.com/Shaik-Sirajuddin/memory/log"
+	pkglog "github.com/Shaik-Sirajuddin/memory/pkg/log"
 )
 
 var Version = "dev"
@@ -25,7 +25,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	log := omnilog.NewLogger("component", "svc")
+	log := pkglog.NewLogger("component", "svc")
 	username := currentUsername()
 
 	mux := &ServiceMux{
