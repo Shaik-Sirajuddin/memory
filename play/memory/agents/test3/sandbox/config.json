@@ -18,7 +18,9 @@
     "config": {
       "access_dirs": [
         "/tmp",
-        "/home/siraj/.nvm/versions/node/v25.2.1/bin"
+        "/home/siraj/.local/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
       ],
       "blocked_dirs": [
         "/root",

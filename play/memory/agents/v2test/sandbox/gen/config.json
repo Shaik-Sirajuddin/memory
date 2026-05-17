@@ -58,14 +58,25 @@
       "type": "bind"
     },
     {
-      "destination": "/home/siraj/.nvm/versions/node/v25.2.1/bin",
+      "destination": "/home/siraj/.local/bin",
       "options": [
         "rbind",
         "nosuid",
         "nodev",
         "ro"
       ],
-      "source": "/home/siraj/.nvm/versions/node/v25.2.1/bin",
+      "source": "/home/siraj/.local/bin",
+      "type": "bind"
+    },
+    {
+      "destination": "/usr/local/bin",
+      "options": [
+        "rbind",
+        "nosuid",
+        "nodev",
+        "ro"
+      ],
+      "source": "/usr/local/bin",
       "type": "bind"
     }
   ],
