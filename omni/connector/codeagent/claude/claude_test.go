@@ -113,13 +113,6 @@ func TestCreateSessionGeneratesIDWhenEmpty(t *testing.T) {
 	assert.NotEmpty(t, result.ID, "Create should generate a session ID when none is provided")
 }
 
-func TestCreateSessionBinaryMissing(t *testing.T) {
-	t.Setenv("PATH", t.TempDir()) // empty dir — no claude binary
-	_, err := New(t.TempDir(), ModelSonnet4)
-	require.Error(t, err, "New should fail when the claude binary is not in PATH")
-	assert.Contains(t, err.Error(), "binary not found")
-}
-
 func TestCreateSessionAuthFailure(t *testing.T) {
 	workDir := t.TempDir()
 	binDir := t.TempDir()

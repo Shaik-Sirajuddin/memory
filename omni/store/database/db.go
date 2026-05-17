@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed schema/*.sql
+//go:embed schema
 var schemaFS embed.FS
 
 var (
@@ -39,11 +39,34 @@ func GetDB() (*sql.DB, error) {
 			conn.Close()
 			return
 		}
+		if err := runMigrations(conn); err != nil {
+			dbErr = err
+			conn.Close()
+			return
+		}
 		db = conn
 	})
 	return db, dbErr
 }
 
+func GetReadOnlyDB() (*sql.DB, error) {
+	path, err := xdg.DataFile("memory/omniagent.db")
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	return conn, nil
+}
 // ApplySchema runs all embedded schema files against conn in sorted order.
 func ApplySchema(conn *sql.DB) error { return applySchema(conn) }
 

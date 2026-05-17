@@ -13,6 +13,7 @@ import (
 
 var ErrNotFound = errors.New("terminal not found")
 
+// PTYDaemon manages the lifecycle of PTY sessions backed by a persistent store.
 type PTYDaemon interface {
 	Create(PTYCreateParams) (*PTYTerminalInfo, error)
 	Adopt(agentID, sessionID string, pid int, submitKey string) error
@@ -20,6 +21,11 @@ type PTYDaemon interface {
 	Exec(agentID, sessionID, prompt string) error
 	Stop(agentID, sessionID string) error
 	List() ([]*PTYTerminalInfo, error)
+	ListSessions(agentID string) ([]*PTYSessionRecord, error)
+	GetSession(agentID, sessionID string) (*PTYSessionRecord, error)
+	// GetMasterFd returns the PTY master file for the session.
+	// The caller must not close the file; it is owned by the daemon.
+	GetMasterFd(agentID, sessionID string) (*os.File, error)
 	Shutdown(ctx context.Context) error
 }
 
@@ -30,6 +36,7 @@ type defaultDaemon struct {
 }
 
 func NewDaemon(store *Store) PTYDaemon {
+	_ = store.MarkAllActiveCrashed()
 	return &defaultDaemon{
 		store:     store,
 		terminals: make(map[string]*PTYTerminal),
@@ -58,6 +65,7 @@ func (d *defaultDaemon) Create(p PTYCreateParams) (*PTYTerminalInfo, error) {
 
 	cmd := exec.Command(p.Command, p.Args...)
 	cmd.Env = append(os.Environ(), p.Env...)
+	cmd.Dir = p.Dir
 
 	master, err := pty.Start(cmd)
 	if err != nil {
@@ -195,6 +203,30 @@ func (d *defaultDaemon) Shutdown(ctx context.Context) error {
 		_ = t.kill()
 	}
 	return nil
+}
+
+func (d *defaultDaemon) ListSessions(agentID string) ([]*PTYSessionRecord, error) {
+	return d.store.ListByAgent(agentID)
+}
+
+func (d *defaultDaemon) GetSession(agentID, sessionID string) (*PTYSessionRecord, error) {
+	return d.store.GetBySession(agentID, sessionID)
+}
+
+// GetMasterFd returns the PTY master file for the given session.
+// The returned file is owned by the daemon; callers must not close it.
+func (d *defaultDaemon) GetMasterFd(agentID, sessionID string) (*os.File, error) {
+	t := d.get(agentID, sessionID)
+	if t == nil {
+		return nil, ErrNotFound
+	}
+	t.mu.Lock()
+	f := t.master
+	t.mu.Unlock()
+	if f == nil {
+		return nil, errors.New("terminal has no master fd")
+	}
+	return f, nil
 }
 
 func (d *defaultDaemon) removeTerminal(agentID, sessionID string) {

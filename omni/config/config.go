@@ -1,22 +1,19 @@
 package config
 
-import (
-	"github.com/Shaik-Sirajuddin/memory/omniagent"
-)
-
 type Developer struct {
-	Debug bool `json:"debug"`
-}
-type Features struct {
-	Memory bool `json:"memory"`
-	// Auto Sync when enabled propgates config changes from any agent to all configured agents default true
-	AutoSync         bool `json:"auto_sync"`
-	RandomAgentNames bool `json:"random_agent_names"`
+	Debug bool `json:"debug" jsonschema:"title=Debug,description=Enable debug logging"`
 }
 
-// OmniConfig specific settings for omni
+type Features struct {
+	Memory bool `json:"memory" jsonschema:"title=Memory,description=Enable the memory subsystem"`
+	// AutoSync propagates config changes from any agent to all configured agents; default true
+	AutoSync         bool `json:"auto_sync"           jsonschema:"title=Auto Sync,description=Propagate config changes from any agent to all configured agents"`
+	RandomAgentNames bool `json:"random_agent_names" jsonschema:"title=Random Agent Names,description=Assign random display names to agents"`
+}
+
+// OmniConfig is the root configuration for omni.
 type OmniConfig struct {
 	*Features
-	Agent *omniagent.Settings `json:"agent,omitempty"`
-	Dev   *Developer          `json:"dev,omitempty"`
+	Agent *Settings  `json:"agent,omitempty" jsonschema:"title=Agent Settings,description=Common settings applied to the code agent"`
+	Dev   *Developer `json:"dev,omitempty"   jsonschema:"title=Developer,description=Developer and debug flags"`
 }

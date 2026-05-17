@@ -21,12 +21,20 @@ The installer auto-detects your architecture (amd64 or arm64). `sudo` is require
 /usr/local/bin/omni        -> /opt/omni/bin/omni
 /usr/local/bin/omni-server -> /opt/omni/bin/omni-server
 
-/etc/systemd/system/omni-server.service
+/etc/systemd/system/omni@.service
 ```
 
 Binaries live under `/opt/omni/bin/` and are symlinked into `/usr/local/bin/` so they are available on `PATH` without any shell config changes. The install requires `sudo`.
 
-The daemon (`omni-server`) starts automatically on install and on every boot via systemd.
+`omni-server` is the supervisor — it starts the PTY daemon and hook-operator as
+in-process goroutines. It manages two sockets:
+
+| Socket | Protocol |
+|--------|----------|
+| `/run/omni-<user>/omni-pty.sock` | Raw PTY (attach, exec, stream) |
+| `/run/omni-<user>/hook-operator.sock` | HTTP hook callbacks |
+
+The daemon starts automatically on install and on every boot via systemd.
 
 You can override the install prefix with `OMNI_PREFIX`:
 

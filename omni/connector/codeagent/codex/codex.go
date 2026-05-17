@@ -104,7 +104,7 @@ func New(workDir, model string, c codeagent.PTYClient, opts ...Option) (codeagen
 	if err != nil {
 		return nil, fmt.Errorf("codex: binary not found: %w", err)
 	}
-	logger.Debug("codex binary located", "path", binPath)
+	logger.Debug("resolved binary", "binary", "codex", "path", binPath)
 
 	if workDir == "" {
 		workDir, err = os.Getwd()
@@ -117,7 +117,7 @@ func New(workDir, model string, c codeagent.PTYClient, opts ...Option) (codeagen
 	// 	model = DefaultModel
 	// }
 
-	ver, _ := captureOutput(workDir, "codex", "--version")
+	ver, _ := captureOutput(workDir, binPath, "--version")
 	ver = trimSpace(ver)
 	logger.Info("codex agent initialised", "workDir", workDir, "model", model, "version", ver)
 
@@ -154,10 +154,11 @@ func (a *codexAgent) Info() *codeagent.CodeAgentInfo { return &a.info }
 // No API keys or credential files are read.
 func (a *codexAgent) GetUserIdentity() codeagent.UserIdentify {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	a.mu.RUnlock()
 
-	cmd := exec.Command("codex", "login", "status")
+	cmd := exec.Command(binPath, "login", "status")
 	cmd.Dir = workDir
 	out, err := cmd.Output()
 	if err != nil {

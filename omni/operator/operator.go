@@ -10,8 +10,6 @@ import (
 
 const (
 	DefaultProvider        = "claude"
-	DefaultModel           = "claude-sonnet-4-6"
-	DefaultProviderVersion = "1.0"
 )
 
 type GetCodeAgentsParams struct {

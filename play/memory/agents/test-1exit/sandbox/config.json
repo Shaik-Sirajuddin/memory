@@ -1,0 +1,31 @@
+{
+  "workspace_policy": {
+    "dir": "/home/siraj/Desktop/ai/memory_tree/cli/play",
+    "fs_policy": "permissive-read",
+    "config": {
+      "access_dirs": [
+        "/home/siraj/Desktop/ai/memory_tree/cli/play",
+        "/usr/bin"
+      ],
+      "blocked_dirs": [
+        "/home/siraj/Desktop/ai/memory_tree/cli/play/.git"
+      ]
+    }
+  },
+  "agent_policy": {
+    "dir": "_default",
+    "fs_policy": "inherit",
+    "config": {
+      "access_dirs": [
+        "/tmp",
+        "/home/siraj/.local/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
+      ],
+      "blocked_dirs": [
+        "/root",
+        "/etc/shadow"
+      ]
+    }
+  }
+}

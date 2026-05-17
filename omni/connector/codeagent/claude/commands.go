@@ -2,20 +2,16 @@ package claude
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
-	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
-	"github.com/creack/pty"
-	"golang.org/x/term"
 )
 
 const (
@@ -74,17 +70,18 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	}
 	workDir := a.workDir
 	sessionID := a.sessionID
+	binPath := a.binPath
 	a.mu.Unlock()
 
 	// Verify binary.
-	out, err := captureOutput(workDir, "claude", "--version")
+	out, err := captureOutput(workDir, binPath, "--version")
 	if err != nil {
 		return nil, fmt.Errorf("claude: create: binary unreachable: %w", err)
 	}
 	logger.Debug("Create: claude binary ok", "version", trimSpace(out))
 
 	// Verify authentication.
-	authCmd := exec.Command("claude", "auth", "status")
+	authCmd := exec.Command(binPath, "auth", "status")
 	authCmd.Dir = workDir
 	if err := authCmd.Run(); err != nil {
 		logger.Warn("Create: user not authenticated", "err", err)
@@ -114,7 +111,7 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		"--output-format", "json",
 		"--max-turns", "1",
 	}
-	seedOut, seedErr := execOutput(workDir, rt, "claude", seedArgs...)
+	seedOut, seedErr := execOutput(workDir, rt, binPath, seedArgs...)
 	if seedErr != nil {
 		return nil, fmt.Errorf("claude: create: seed session: %w", seedErr)
 	}
@@ -124,36 +121,38 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	return &codeagent.CreateSessionResult{ID: id, Name: p.Name}, nil
 }
 
-// ptyStoper is satisfied by PTY daemon clients that can notify the daemon
-// when a session terminates. It is optional — Pipe-only clients are fine.
-type ptyStoper interface {
-	Stop(agentID, sessionID string) error
+type ptyMetaAttached interface {
+	MetaAttached(sessionID string) (int, error)
 }
 
 // Resume launches an interactive claude session via `claude -r <id>`.
 func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSessionResult, error) {
-	// Block if a PTY session is already active.
-	a.mu.RLock()
-	live := a.masterPTY != nil
-	a.mu.RUnlock()
-	if live {
-		return nil, errors.New("claude: PTY session already active; stop it before resuming")
+	ctx := p.Context
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	a.mu.Lock()
+	binPath := a.binPath
 	workDir := a.workDir
 	if p.RunTime != nil {
 		a.sbxRuntime = *p.RunTime
 	}
 	rt := a.sbxRuntime
 	client := a.ptyClient
-	agentID := a.sessionID
+	currentSessionID := a.sessionID
 	a.mu.Unlock()
 
 	// Prefer the explicit Claude session ID when provided; fall back to p.ID.
 	resumeID := p.ID
 	if p.SessionID != "" {
 		resumeID = p.SessionID
+	}
+	if resumeID == "" {
+		resumeID = currentSessionID
+	}
+	if resumeID == "" {
+		return nil, errors.New("claude: resume: empty session id")
 	}
 
 	args := []string{"-r", resumeID}
@@ -162,7 +161,7 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 	}
 
 	if rt != nil {
-		if err := rt.Command("claude", args); err != nil {
+		if err := rt.Command(binPath, args); err != nil {
 			return nil, fmt.Errorf("claude: resume: sandbox command: %w", err)
 		}
 		pid := runtimePID(rt)
@@ -170,99 +169,52 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resumeID}, nil
 	}
 
-	cmd := localCommand(workDir, "claude", args...)
-
-	// PTY mode: full I/O bridge so the user sees output and can type, while
-	// ExecInSession can inject prompts via the same serialised write channel.
 	if client != nil {
-		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-
-		master, err := pty.Start(cmd)
+		info, err := client.Get("", resumeID)
 		if err != nil {
-			return nil, fmt.Errorf("claude: resume: pty start: %w", err)
+			return nil, fmt.Errorf("claude: resume: pty get %q: %w", resumeID, err)
 		}
-
-		// Propagate terminal resize events to the PTY.
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGWINCH)
-		go func() {
-			for range sigCh {
-				_ = pty.InheritSize(os.Stdin, master)
+		if meta, ok := client.(ptyMetaAttached); ok {
+			count, err := meta.MetaAttached(resumeID)
+			if err != nil {
+				logger.Warn("Resume: PTY attached count unavailable", "sessionID", resumeID, "err", err)
+			} else if count > 1 {
+				return nil, errors.New("claude: resume: PTY session already has an interactive user attached")
 			}
-		}()
-		sigCh <- syscall.SIGWINCH // set initial size
-
-		// Switch stdin to raw mode so keystrokes go straight through.
-		var oldState *term.State
-		if st, err := term.MakeRaw(int(os.Stdin.Fd())); err != nil {
-			logger.Warn("Resume: raw mode unavailable", "err", err)
-		} else {
-			oldState = st
 		}
-
-		// Serialised write channel — both keyboard input and ExecInSession use it.
-		wch := make(chan []byte, 128)
+		command := append([]string{binPath}, args...)
+		started := false
+		if info == nil || info.Status != "active" {
+			if err := client.Start(resumeID, command, os.Environ(), workDir); err != nil {
+				return nil, fmt.Errorf("claude: resume: pty start: %w", err)
+			}
+			started = true
+		}
 		a.mu.Lock()
-		a.masterPTY = master
-		a.writeCh = wch
+		a.sessionID = resumeID
 		a.mu.Unlock()
-
-		// Single writer goroutine: drains wch and writes to PTY master.
+		if started {
+			logger.Info("Resume: PTY daemon session started", "sessionID", resumeID)
+		} else {
+			logger.Info("Resume: attached to active PTY daemon session", "sessionID", resumeID)
+		}
+		logger.Info("Resume: attaching PTY daemon session", "sessionID", resumeID)
+		done := make(chan error, 1)
 		go func() {
-			for chunk := range wch {
-				_, _ = master.Write(chunk)
+			defer close(done)
+			err := client.Attach(ctx, resumeID)
+			if err != nil {
+				done <- fmt.Errorf("claude: resume: pty attach: %w", err)
+				return
 			}
+			logger.Info("Resume: PTY daemon session detached", "sessionID", resumeID)
+			done <- nil
 		}()
-
-		// Bridge PTY master → stdout so the user sees Claude's output.
-		go func() { _, _ = io.Copy(os.Stdout, master) }()
-
-		// Bridge stdin → wch so the user can type.
-		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := os.Stdin.Read(buf)
-				if n > 0 {
-					wch <- append([]byte(nil), buf[:n]...)
-				}
-				if err != nil {
-					return
-				}
-			}
-		}()
-
-		pid := strconv.Itoa(cmd.Process.Pid)
-		logger.Info("Resume: PTY session started", "pid", pid, "sessionID", resumeID)
-
-		// done is closed when the child exits, unblocking the return below.
-		done := make(chan struct{})
-
-		// Cleanup goroutine: restores terminal state and notifies daemon on exit.
-		go func() {
-			_ = cmd.Wait()
-			signal.Stop(sigCh)
-			close(sigCh)
-			if oldState != nil {
-				_ = term.Restore(int(os.Stdin.Fd()), oldState)
-			}
-			close(wch)
-			a.mu.Lock()
-			a.masterPTY = nil
-			a.writeCh = nil
-			a.mu.Unlock()
-			if s, ok := client.(ptyStoper); ok {
-				_ = s.Stop(agentID, resumeID)
-			}
-			logger.Debug("Resume: PTY session terminated", "sessionID", resumeID)
-			close(done)
-		}()
-
-		// Block until the session ends — keeps the terminal attached and prevents
-		// the CLI process from exiting while the PTY I/O bridge is running.
-		<-done
-
-		return &codeagent.ResumeSessionResult{ProcessID: pid, SessionID: resumeID}, nil
+		return &codeagent.ResumeSessionResult{ProcessID: "", SessionID: resumeID, Done: done}, nil
 	}
+
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.Dir = workDir
 
 	// Blocking mode: open /dev/tty directly so the child gets a proper
 	// controlling terminal for raw mode. Pipe-like fds cause EIO on setRawMode.
@@ -323,26 +275,26 @@ func (a *claudeAgent) Stop() {
 // returns immediately without waiting for a response.
 func (a *claudeAgent) ExecInSession(p codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
 	a.mu.RLock()
-	wch := a.writeCh
 	client := a.ptyClient
-	agentID := a.sessionID
+	sessionID := a.sessionID
 	a.mu.RUnlock()
 
 	payload := buildExecPayload(p.Prompt)
-
-	if wch != nil {
-		// Send through the serialised write channel — safe with concurrent keyboard input.
-		wch <- payload
-	} else if client != nil {
-		if err := client.Pipe(agentID, p.SessionID, payload); err != nil {
-			return nil, fmt.Errorf("claude: ExecInSession: session not live: %w", err)
-		}
-	} else {
+	if p.SessionID != "" {
+		sessionID = p.SessionID
+	}
+	if sessionID == "" {
+		return nil, fmt.Errorf("claude: ExecInSession: no session ID")
+	}
+	if client == nil {
 		return nil, fmt.Errorf("claude: ExecInSession: no active PTY session")
 	}
+	if err := client.Exec(sessionID, string(payload)); err != nil {
+		return nil, fmt.Errorf("claude: ExecInSession: session not live: %w", err)
+	}
 
-	logger.Debug("ExecInSession: prompt piped", "sessionID", p.SessionID, "promptLen", len(p.Prompt))
-	return &codeagent.ExecInSessionResult{SessionID: p.SessionID}, nil
+	logger.Debug("ExecInSession: prompt delegated", "sessionID", sessionID, "promptLen", len(p.Prompt))
+	return &codeagent.ExecInSessionResult{SessionID: sessionID}, nil
 }
 
 // ============================================================
@@ -366,6 +318,7 @@ func (a *claudeAgent) GetSessionConfig(_ codeagent.GetSessionConfigParams) (*cod
 
 func (a *claudeAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult, error) {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	model := a.model
 	permMode := a.permMode
@@ -377,7 +330,7 @@ func (a *claudeAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult,
 	args := buildExecArgs(p.Prompt, model, permMode, systemPrompt, sessionID, p.OutputFormat, p.MaxTurns)
 	logger.Debug("Exec", "workDir", workDir, "args", args)
 
-	response, err := execOutput(workDir, rt, "claude", args...)
+	response, err := execOutput(workDir, rt, binPath, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -397,6 +350,7 @@ func (a *claudeAgent) Exec(p codeagent.ExecuteParams) (*codeagent.ExecuteResult,
 
 func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult, error) {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	model := a.model
 	permMode := a.permMode
@@ -410,7 +364,7 @@ func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult,
 
 	ch := make(chan codeagent.StreamEvent, 32)
 	if rt != nil {
-		proc, err := rt.Start("claude", args)
+		proc, err := rt.Start(binPath, args)
 		if err != nil {
 			return nil, fmt.Errorf("claude stream: sandbox start: %w", err)
 		}
@@ -441,7 +395,7 @@ func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult,
 		return &codeagent.StreamResult{Events: ch, SessionID: sessionID}, nil
 	}
 
-	cmd := localCommand(workDir, "claude", args...)
+	cmd := localCommand(workDir, binPath, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("claude stream: stdout pipe: %w", err)

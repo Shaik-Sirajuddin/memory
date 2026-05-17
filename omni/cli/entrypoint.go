@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,20 +35,34 @@ type DefaultCli struct {
 	root           *cobra.Command
 	operator       operator.Operator
 	configResolver config.OmniConfigResolver
+	version        string
 }
 
 // Entrypoint builds the CLI root command.
 func Entrypoint(op operator.Operator, resolver config.OmniConfigResolver) *DefaultCli {
+	return EntrypointWithVersion(op, resolver, "dev")
+}
+
+// EntrypointWithVersion builds the CLI root command with release metadata.
+func EntrypointWithVersion(op operator.Operator, resolver config.OmniConfigResolver, version string) *DefaultCli {
+	if version == "" {
+		version = "dev"
+	}
 	c := &DefaultCli{
 		operator:       op,
 		configResolver: resolver,
+		version:        version,
 	}
 
 	root := &cobra.Command{
-		Use:   "omni",
-		Short: "Omni agent CLI",
+		Use:     "omni",
+		Short:   "Omni agent CLI",
+		Version: version,
 	}
+	root.SetVersionTemplate("{{.Version}}\n")
 
+	root.AddCommand(c.newVersionCommand())
+	root.AddCommand(c.newHookCommand())
 	root.AddCommand(c.newConfigCommand())
 	root.AddCommand(c.newAgentCommand())
 	root.AddCommand(c.newTeamCommand())
@@ -57,6 +72,21 @@ func Entrypoint(op operator.Operator, resolver config.OmniConfigResolver) *Defau
 
 	c.root = root
 	return c
+}
+
+func (c *DefaultCli) newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print omni version",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			version := c.version
+			if version == "" {
+				version = "dev"
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), version)
+			return nil
+		},
+	}
 }
 
 // Install executes the CLI.
@@ -240,6 +270,7 @@ func (c *DefaultCli) newDoctorCommand() *cobra.Command {
 		Short: "Validate and install sandbox runtime prerequisites",
 	}
 
+	doctorCmd.AddCommand(c.newDoctorHooksCommand())
 	doctorCmd.AddCommand(c.newDoctorCheckCommand())
 	doctorCmd.AddCommand(c.newDoctorInstallCommand())
 	return doctorCmd
@@ -1019,14 +1050,22 @@ func sandboxConfigDir(workspaceDir, agentName string) string {
 	return filepath.Join(workspaceDir, operator.MemoryDirName, "agents", agentName, "sandbox")
 }
 
+func serviceUnitName() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return "omni@" + u.Username
+	}
+	if v := os.Getenv("USER"); v != "" {
+		return "omni@" + v
+	}
+	return "omni@" + os.Getenv("LOGNAME")
+}
+
 func runSystemctl(action string) error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return err
 	}
-	if err := exec.Command("systemctl", "--user", action, "omni-server").Run(); err == nil {
-		return nil
-	}
-	return exec.Command("systemctl", action, "omni-server").Run()
+	unit := serviceUnitName()
+	return exec.Command("systemctl", action, unit).Run()
 }
 
 func printSystemctlStatus() error {
@@ -1034,8 +1073,9 @@ func printSystemctlStatus() error {
 		fmt.Println("server not running")
 		return nil
 	}
-	out, err := exec.Command("systemctl", "--user", "status", "omni-server").Output()
-	if err != nil {
+	cmd := exec.Command("systemctl", "status", serviceUnitName())
+	out, _ := cmd.CombinedOutput() // non-zero exit is normal for stopped/failed states
+	if len(out) == 0 {
 		fmt.Println("server not running")
 		return nil
 	}

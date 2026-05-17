@@ -45,4 +45,5 @@ pre_execute:
 post_execute:
   - always execute workflows in workflows/post one after one after complete user specified prompts
   - after completing an execution always execute workflows/post-execute/* sequentially
+  - skip any workflows starting with d.
   - after execution , create a corresponding file in state/<TASK_NAME>.md and create a minimal doc of changes , progress

@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -15,6 +16,7 @@ import (
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 	"github.com/Shaik-Sirajuddin/memory/store/codesession"
 	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
+	ptyclients "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/clients"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -52,7 +54,15 @@ CREATE TABLE IF NOT EXISTS code_sessions (
     idx              INTEGER NOT NULL DEFAULT 0,
     is_active        INTEGER NOT NULL DEFAULT 0,
     prompts          INTEGER NOT NULL DEFAULT 0,
-    last_sync_prompt INTEGER NOT NULL DEFAULT 0
+    last_sync_prompt INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'ready',
+    stop_reason      TEXT NOT NULL DEFAULT '',
+    tokens_input     INTEGER NOT NULL DEFAULT 0,
+    tokens_output    INTEGER NOT NULL DEFAULT 0,
+    tokens_cached_input INTEGER NOT NULL DEFAULT 0,
+    tokens_cached_output INTEGER NOT NULL DEFAULT 0,
+    tokens_max       INTEGER NOT NULL DEFAULT 0,
+    tokens_consumed_percent REAL NOT NULL DEFAULT 0
 );`
 
 func TestStoreSchemaIncludesRequiredTables(t *testing.T) {
@@ -194,7 +204,7 @@ func TestCreateAgent(t *testing.T) {
 		runtime := &stubCodeAgent{}
 		op.newCodeAgent = func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
 			assert.Equal(t, codeagent.Provider(operator.DefaultProvider), provider, "CreateAgent should use the default provider")
-			assert.Equal(t, operator.DefaultModel, model, "CreateAgent should use the default model")
+			assert.Empty(t, model, "CreateAgent should let the connector resolve the default model")
 			assert.NotEmpty(t, workDir, "CreateAgent should pass a workspace to the connector")
 			return runtime, nil
 		}
@@ -523,6 +533,42 @@ func TestSwitchProvider(t *testing.T) {
 	})
 }
 
+func TestPipe(t *testing.T) {
+	t.Run("ResolvesActiveSessionWhenSessionIDMissing", func(t *testing.T) {
+		op := newTestOperator(t, true)
+		pty := &stubPTYDaemonClient{}
+		op.ptyDaemon = pty
+
+		workspace := sandbox.WorkspaceDir(t.TempDir())
+		require.NoError(t, op.CreateAgent(operator.CreateAgentParams{
+			Workspace:   workspace,
+			Name:        "pipe-me",
+			Interactive: false,
+		}), "CreateAgent should create an active session for pipe")
+
+		result, err := op.ListCodeAgents(operator.GetCodeAgentsParams{Workspace: workspace})
+		require.NoError(t, err, "ListCodeAgents should return the pipe target agent")
+		require.Len(t, result.Agents, 1, "ListCodeAgents should include one pipe target agent")
+		agentID := result.Agents[0].ID
+		prev, err := os.Getwd()
+		require.NoError(t, err, "Current working directory lookup should succeed")
+		require.NoError(t, os.Chdir(string(workspace)), "Changing to workspace should succeed")
+		t.Cleanup(func() {
+			require.NoError(t, os.Chdir(prev), "Working directory should be restored")
+		})
+
+		err = op.Pipe(operator.PipeParams{
+			AgentID: "pipe-me",
+			Data:    []byte("hello"),
+		})
+		require.NoError(t, err, "Pipe should resolve the active session when session_id is omitted")
+		require.Len(t, pty.pipeCalls, 1, "Pipe should forward exactly one payload to the PTY daemon")
+		assert.Equal(t, agentID, pty.pipeCalls[0].agentID, "Pipe should forward the resolved agent ID")
+		assert.Equal(t, agentID, pty.pipeCalls[0].sessionID, "Pipe should use the active session ID")
+		assert.Equal(t, []byte("hello"), pty.pipeCalls[0].data, "Pipe should forward the raw payload")
+	})
+}
+
 func newTestOperator(t *testing.T, memoryEnabled bool) *DefaultOperator {
 	t.Helper()
 
@@ -649,6 +695,8 @@ func (s *stubCodeAgent) GetUserIdentity() codeagent.UserIdentify {
 
 func (s *stubCodeAgent) Stop() {}
 
+func (s *stubCodeAgent) SetPTYClient(codeagent.PTYClient) {}
+
 func (s *stubCodeAgent) ExecInSession(codeagent.ExecInSessionParams) (*codeagent.ExecInSessionResult, error) {
 	return nil, nil
 }
@@ -751,4 +799,61 @@ func (s *stubCodeAgent) PrePromptInputResult(any) (*hooks.PrePromptInputResult, 
 
 func (s *stubCodeAgent) PostPromptInputResult(any) (*hooks.PostPromptInputResult, error) {
 	return nil, nil
+}
+
+type stubPTYDaemonClient struct {
+	pipeCalls []struct {
+		agentID   string
+		sessionID string
+		data      []byte
+	}
+}
+
+func (s *stubPTYDaemonClient) Pipe(agentID, sessionID string, data []byte) error {
+	s.pipeCalls = append(s.pipeCalls, struct {
+		agentID   string
+		sessionID string
+		data      []byte
+	}{
+		agentID:   agentID,
+		sessionID: sessionID,
+		data:      append([]byte(nil), data...),
+	})
+	return nil
+}
+
+func (s *stubPTYDaemonClient) Start(string, []string, []string, string) error {
+	return nil
+}
+
+func (s *stubPTYDaemonClient) Attach(context.Context, string) error {
+	return nil
+}
+
+func (s *stubPTYDaemonClient) Exec(string, string) error {
+	return nil
+}
+
+func (s *stubPTYDaemonClient) Stop(string) error {
+	return nil
+}
+
+func (s *stubPTYDaemonClient) Register(string, string, string) error {
+	return nil
+}
+
+func (s *stubPTYDaemonClient) List(string) ([]*ptyclients.PTYTerminalInfo, error) {
+	return nil, nil
+}
+
+func (s *stubPTYDaemonClient) Get(string, string) (*ptyclients.PTYTerminalInfo, error) {
+	return nil, nil
+}
+
+func (s *stubPTYDaemonClient) ListAttached(string) ([]ptyclients.AttachedProcess, error) {
+	return nil, nil
+}
+
+func (s *stubPTYDaemonClient) MetaAttached(string) (int, error) {
+	return 0, nil
 }

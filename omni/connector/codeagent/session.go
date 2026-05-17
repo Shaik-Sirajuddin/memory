@@ -1,6 +1,10 @@
 package codeagent
 
-import sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+import (
+	"context"
+
+	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+)
 
 // Session holds metadata about a persisted agent session.
 type Session struct {
@@ -31,6 +35,7 @@ type CreateSessionResult struct {
 
 // --- Resume ---
 type ResumeSessionParams struct {
+	Context     context.Context
 	ID          string
 	ForkSession bool
 	SessionID   string
@@ -40,6 +45,7 @@ type ResumeSessionParams struct {
 type ResumeSessionResult struct {
 	ProcessID string
 	SessionID string
+	Done      <-chan error
 }
 
 // --- List Sessions ---

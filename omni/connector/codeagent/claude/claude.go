@@ -62,6 +62,7 @@ type claudeAgent struct {
 	*ClaudeParser
 	resolver        *settings.Resolver
 	mu              sync.RWMutex
+	binPath         string
 	workDir         string
 	model           string
 	permMode        codeagent.PermissionMode
@@ -70,8 +71,6 @@ type claudeAgent struct {
 	sbx             *sandbox.Config
 	sbxRuntime      sandbox.SandboxRuntime
 	ptyClient       codeagent.PTYClient
-	masterPTY       *os.File
-	writeCh         chan []byte // serialised writer to PTY master; nil when no session
 	info            codeagent.CodeAgentInfo
 	registeredHooks []*hooks.HookData
 }
@@ -84,7 +83,7 @@ func New(workDir, model string, c codeagent.PTYClient) (codeagent.CodeAgent, err
 	if err != nil {
 		return nil, fmt.Errorf("claude: binary not found in PATH: %w", err)
 	}
-	logger.Debug("claude binary located", "path", binPath)
+	logger.Debug("resolved binary", "binary", "claude", "path", binPath)
 
 	if workDir == "" {
 		workDir, err = os.Getwd()
@@ -96,13 +95,14 @@ func New(workDir, model string, c codeagent.PTYClient) (codeagent.CodeAgent, err
 		model = DefaultModel
 	}
 
-	ver, _ := captureOutput(workDir, "claude", "--version")
+	ver, _ := captureOutput(workDir, binPath, "--version")
 	ver = strings.TrimSpace(ver)
 	logger.Info("claude agent initialised", "workDir", workDir, "model", model, "version", ver)
 
 	a := &claudeAgent{
 		ClaudeParser: &ClaudeParser{},
 		resolver:     settings.New(Claude),
+		binPath:      binPath,
 		workDir:      workDir,
 		model:        model,
 		permMode:     codeagent.PermissionDefault,
@@ -130,10 +130,11 @@ func (a *claudeAgent) Info() *codeagent.CodeAgentInfo { return &a.info }
 // Exit code 0 means authenticated; non-zero means not logged in.
 func (a *claudeAgent) GetUserIdentity() codeagent.UserIdentify {
 	a.mu.RLock()
+	binPath := a.binPath
 	workDir := a.workDir
 	a.mu.RUnlock()
 
-	cmd := exec.Command("claude", "auth", "status")
+	cmd := exec.Command(binPath, "auth", "status")
 	cmd.Dir = workDir
 	out, err := cmd.Output()
 	if err != nil {

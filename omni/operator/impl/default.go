@@ -1,20 +1,16 @@
 package impl
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
+	"syscall"
 
 	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
@@ -30,6 +26,8 @@ import (
 	agentstore "github.com/Shaik-Sirajuddin/memory/store/agent"
 	"github.com/Shaik-Sirajuddin/memory/store/codesession"
 	operatorstore "github.com/Shaik-Sirajuddin/memory/store/operator"
+	ptydaemon "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon"
+	ptyclients "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/clients"
 	"github.com/google/uuid"
 )
 
@@ -51,31 +49,15 @@ type DefaultOperator struct {
 	sessionStore         codesession.CodeSessionStore
 	agentMemory          operator.AgentMemory
 	provisioner          sandbox.SandboxProvisioner // nil = sandboxing disabled
-	ptyDaemon            ptyDaemonClient
+	ptyDaemon            ptyclients.Client
 	newCodeAgent         func(provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error)
 	newCodeAgentForAgent func(agentID string, provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error)
 }
 
-type ptyDaemonClient interface {
-	Pipe(agentID, sessionID string, data []byte) error
-	Register(agentID, sessionID, processID string) error
-	List() ([]*PTYTerminalInfo, error)
-}
-
-type PTYTerminalInfo struct {
-	AgentID   string `json:"agent_id"`
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
-}
-
-type httpPTYDaemonClient struct {
-	socketPath string
-	httpClient *http.Client
-}
-
 type codexPTYAdapter struct {
 	agentID string
-	inner   ptyDaemonClient
+	workDir string
+	inner   ptyclients.Client
 }
 
 func (a *codexPTYAdapter) Pipe(_ string, sessionID string, data []byte) error {
@@ -85,115 +67,72 @@ func (a *codexPTYAdapter) Pipe(_ string, sessionID string, data []byte) error {
 	return a.inner.Pipe(a.agentID, sessionID, data)
 }
 
-func newPTYDaemonClient() *httpPTYDaemonClient {
-	socketPath := os.Getenv("PTYDAEMON_SOCKET")
-	if socketPath == "" {
-		socketPath = "/tmp/ptydaemon.sock"
-	}
-	return &httpPTYDaemonClient{
-		socketPath: socketPath,
-		httpClient: &http.Client{
-			Timeout: 2 * time.Second,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", socketPath)
-				},
-			},
-		},
-	}
-}
-
-func (c *httpPTYDaemonClient) Pipe(agentID, sessionID string, data []byte) error {
-	if c == nil {
+func (a *codexPTYAdapter) Start(sessionID string, command []string, env []string, dir string) error {
+	if a == nil || a.inner == nil {
 		return fmt.Errorf("operator: pty daemon client is not configured")
 	}
-	body, err := json.Marshal(struct {
-		AgentID   string `json:"agent_id"`
-		SessionID string `json:"session_id"`
-		Data      []byte `json:"data"`
-	}{
-		AgentID:   agentID,
-		SessionID: sessionID,
-		Data:      data,
-	})
-	if err != nil {
-		return err
+	if strings.TrimSpace(dir) == "" {
+		dir = a.workDir
 	}
-	req, err := http.NewRequest(http.MethodPost, "http://ptydaemon/pipe", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("operator: pty daemon pipe %s: %w", c.socketPath, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("operator: pty daemon pipe: %s", resp.Status)
-	}
-	return nil
+	return a.inner.Start(sessionID, command, env, dir)
 }
 
-func (c *httpPTYDaemonClient) List() ([]*PTYTerminalInfo, error) {
-	if c == nil {
+func (a *codexPTYAdapter) Attach(ctx context.Context, sessionID string) error {
+	if a == nil || a.inner == nil {
+		return fmt.Errorf("operator: pty daemon client is not configured")
+	}
+	return a.inner.Attach(ctx, sessionID)
+}
+
+func (a *codexPTYAdapter) Exec(sessionID, input string) error {
+	if a == nil || a.inner == nil {
+		return fmt.Errorf("operator: pty daemon client is not configured")
+	}
+	return a.inner.Exec(sessionID, input)
+}
+
+func (a *codexPTYAdapter) Stop(sessionID string) error {
+	if a == nil || a.inner == nil {
+		return fmt.Errorf("operator: pty daemon client is not configured")
+	}
+	return a.inner.Stop(sessionID)
+}
+
+func (a *codexPTYAdapter) List(_ string) ([]*codeagent.PTYTerminalInfo, error) {
+	if a == nil || a.inner == nil {
 		return nil, fmt.Errorf("operator: pty daemon client is not configured")
 	}
-	req, err := http.NewRequest(http.MethodGet, "http://ptydaemon/list", nil)
+	infos, err := a.inner.List(a.agentID)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("operator: pty daemon list %s: %w", c.socketPath, err)
+	out := make([]*codeagent.PTYTerminalInfo, 0, len(infos))
+	for _, info := range infos {
+		if info == nil {
+			continue
+		}
+		out = append(out, &codeagent.PTYTerminalInfo{
+			AgentID:   info.AgentID,
+			SessionID: info.SessionID,
+			Status:    info.Status,
+		})
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("operator: pty daemon list: %s", resp.Status)
-	}
-	var infos []*PTYTerminalInfo
-	if err := json.NewDecoder(resp.Body).Decode(&infos); err != nil {
-		return nil, fmt.Errorf("operator: pty daemon list decode: %w", err)
-	}
-	return infos, nil
+	return out, nil
 }
 
-func (c *httpPTYDaemonClient) Register(agentID, sessionID, processID string) error {
-	if c == nil || strings.TrimSpace(agentID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(processID) == "" {
-		return nil
+func (a *codexPTYAdapter) Get(_ string, sessionID string) (*codeagent.PTYTerminalInfo, error) {
+	if a == nil || a.inner == nil {
+		return nil, fmt.Errorf("operator: pty daemon client is not configured")
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(processID))
-	if err != nil {
-		return fmt.Errorf("operator: register: invalid pid %q: %w", processID, err)
+	info, err := a.inner.Get(a.agentID, sessionID)
+	if err != nil || info == nil {
+		return nil, err
 	}
-	body, err := json.Marshal(struct {
-		AgentID   string `json:"agent_id"`
-		SessionID string `json:"session_id"`
-		PID       int    `json:"pid"`
-		SubmitKey string `json:"submit_key"`
-	}{
-		AgentID:   agentID,
-		SessionID: sessionID,
-		PID:       pid,
-	})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest(http.MethodPost, "http://ptydaemon/adopt", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("operator: pty daemon adopt: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("operator: pty daemon adopt: %s", resp.Status)
-	}
-	return nil
+	return &codeagent.PTYTerminalInfo{
+		AgentID:   info.AgentID,
+		SessionID: info.SessionID,
+		Status:    info.Status,
+	}, nil
 }
 
 // SwitchProvider implements [Operator].
@@ -228,7 +167,7 @@ func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) e
 	}
 
 	if target == nil {
-		model := operator.DefaultModel
+		model := ""
 		ca, err := o.createCodeAgent(agent, params.Provider, string(agent.WorkspaceDir), model)
 		if err != nil {
 			return fmt.Errorf("operator: switch provider: init code agent: %w", err)
@@ -268,6 +207,7 @@ func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) e
 		if createResult != nil && createResult.ID != "" {
 			newID = createResult.ID
 		}
+		model = resolvedSessionModel(ca, model)
 		target = &omniagent.CodeSession{
 			Id:       newID,
 			Model:    &codeagent.Model{Provider: params.Provider, Model: model},
@@ -294,7 +234,7 @@ func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) e
 		return fmt.Errorf("operator: switch provider: activate session %q: %w", target.Id, err)
 	}
 
-	model := operator.DefaultModel
+	model := ""
 	if target.Model != nil && target.Model.Model != "" {
 		model = target.Model.Model
 	}
@@ -302,8 +242,14 @@ func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) e
 	if err != nil {
 		return fmt.Errorf("operator: switch provider: init runtime for resume: %w", err)
 	}
-	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: target.Id}); err != nil {
+	resumeCtx, cancelResume := newResumeContext()
+	defer cancelResume()
+	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: target.Id})
+	if err != nil {
 		return fmt.Errorf("operator: switch provider: resume session %q: %w", target.Id, err)
+	}
+	if err := waitResumeLifecycle(resumeCtx, resumeResult); err != nil {
+		return err
 	}
 	return nil
 }
@@ -341,17 +287,28 @@ func (o *DefaultOperator) ExecInSession(params operator.ExecInSessionParams) (*o
 }
 
 func (o *DefaultOperator) Pipe(params operator.PipeParams) error {
-	if strings.TrimSpace(params.SessionID) == "" {
-		return fmt.Errorf("session_id required")
-	}
 	agent, _, err := o.codeAgentForAgentID(params.AgentID)
 	if err != nil {
 		return err
 	}
+	sessionID := strings.TrimSpace(params.SessionID)
+	if sessionID == "" {
+		if o.sessionStore == nil {
+			return fmt.Errorf("operator: session store is not configured")
+		}
+		session, err := o.sessionStore.GetSession(agent.ID)
+		if err != nil {
+			return fmt.Errorf("operator: active session for agent %q: %w", agent.ID, err)
+		}
+		if session == nil || strings.TrimSpace(session.Id) == "" {
+			return fmt.Errorf("operator: active session not found for agent %q", agent.ID)
+		}
+		sessionID = strings.TrimSpace(session.Id)
+	}
 	if o.ptyDaemon == nil {
 		return fmt.Errorf("operator: pty daemon client is not configured")
 	}
-	if err := o.ptyDaemon.Pipe(agent.ID, params.SessionID, params.Data); err != nil {
+	if err := o.ptyDaemon.Pipe(agent.ID, sessionID, params.Data); err != nil {
 		return fmt.Errorf("operator: pipe session: %w", err)
 	}
 	return nil
@@ -368,7 +325,7 @@ func (o *DefaultOperator) codeAgentForAgentID(agentID string) (*omniagent.AgentI
 	}
 
 	provider := codeagent.Provider(operator.DefaultProvider)
-	model := operator.DefaultModel
+	model := ""
 	if o.sessionStore != nil {
 		if session, sErr := o.sessionStore.GetSession(agent.ID); sErr == nil && session != nil && session.Model != nil {
 			if session.Model.Provider != "" {
@@ -387,13 +344,26 @@ func (o *DefaultOperator) codeAgentForAgentID(agentID string) (*omniagent.AgentI
 }
 
 func (o *DefaultOperator) createCodeAgent(agent *omniagent.AgentInfo, provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
+	var ca codeagent.CodeAgent
+	var err error
 	if agent != nil && o.newCodeAgentForAgent != nil {
-		return o.newCodeAgentForAgent(agent.ID, provider, workDir, model)
+		ca, err = o.newCodeAgentForAgent(agent.ID, provider, workDir, model)
+	} else if o.newCodeAgent != nil {
+		ca, err = o.newCodeAgent(provider, workDir, model)
+	} else {
+		return nil, fmt.Errorf("operator: code agent factory is not configured")
 	}
-	if o.newCodeAgent != nil {
-		return o.newCodeAgent(provider, workDir, model)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("operator: code agent factory is not configured")
+	if ca != nil && agent != nil && o.ptyDaemon != nil {
+		ca.SetPTYClient(o.ptyClientForProvider(agent.ID, provider, workDir))
+	}
+	return ca, nil
+}
+
+func (o *DefaultOperator) ptyClientForProvider(agentID string, provider codeagent.Provider, workDir string) codeagent.PTYClient {
+	return &codexPTYAdapter{agentID: agentID, workDir: workDir, inner: o.ptyDaemon}
 }
 
 func (o *DefaultOperator) resolveAgentRef(ref string) (*omniagent.AgentInfo, error) {
@@ -446,6 +416,25 @@ func (o *DefaultOperator) registerPTYSession(agentID, sessionID string, result *
 	logger.Debug("ResumeAgent: pty daemon registration completed", "agentID", agentID, "sessionID", sessionID, "pid", result.ProcessID)
 }
 
+func newResumeContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+func waitResumeLifecycle(ctx context.Context, result *codeagent.ResumeSessionResult) error {
+	if result == nil || result.Done == nil {
+		return nil
+	}
+	select {
+	case err := <-result.Done:
+		if err != nil {
+			return fmt.Errorf("operator: resume lifecycle failed: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // ResumeAgent implements [Operator].
 func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 	workspace, err := o.resolveWorkspace(params.Workspace)
@@ -489,9 +478,9 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 		return fmt.Errorf("operator: agent %q not found in workspace %q", name, workspace)
 	}
 
-	// Resolve provider/model from persisted session; fall back to defaults.
+	// Resolve provider/model from persisted session; let connectors apply model defaults.
 	provider := codeagent.Provider(operator.DefaultProvider)
-	model := operator.DefaultModel
+	model := ""
 	sessionID := agent.ID
 	if o.sessionStore != nil {
 		if session, sErr := o.sessionStore.GetSession(agent.ID); sErr == nil && session != nil {
@@ -515,7 +504,7 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 		sessionID = requestedSessionID
 	}
 	if o.ptyDaemon != nil {
-		if infos, err := o.ptyDaemon.List(); err == nil {
+		if infos, err := o.ptyDaemon.List(agent.ID); err == nil {
 			for _, info := range infos {
 				if info != nil && info.AgentID == agent.ID && info.SessionID == sessionID && info.Status == "active" {
 					return fmt.Errorf("operator: session %q already has an active PTY terminal", sessionID)
@@ -525,7 +514,6 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 			logger.Debug("ResumeAgent: pty daemon active session check skipped", "agentID", agent.ID, "sessionID", sessionID, "err", err)
 		}
 	}
-
 	ca, err := o.createCodeAgent(agent, provider, string(agent.WorkspaceDir), model)
 	if err != nil {
 		logger.Error("ResumeAgent: init code agent runtime failed", "agentID", agent.ID, "err", err)
@@ -551,7 +539,10 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 		}
 	}
 
-	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
+	resumeCtx, cancelResume := newResumeContext()
+	defer cancelResume()
+
+	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
 	if err != nil {
 		if !isSessionNotFoundError(err) {
 			logger.Error("ResumeAgent: resume failed", "agentID", agent.ID, "err", err)
@@ -573,6 +564,7 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 		if createResult != nil && createResult.ID != "" {
 			sessionID = createResult.ID
 		}
+		model = resolvedSessionModel(ca, model)
 		if o.sessionStore != nil {
 			if storeErr := o.sessionStore.CreateSession(agent.ID, &omniagent.CodeSession{
 				Id:       sessionID,
@@ -582,13 +574,17 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 				logger.Warn("ResumeAgent: fallback session store sync failed", "agentID", agent.ID, "sessionID", sessionID, "err", storeErr)
 			}
 		}
-		resumeResult, err = ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
+		resumeResult, err = ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
 		if err != nil {
 			logger.Error("ResumeAgent: fallback resume failed", "agentID", agent.ID, "sessionID", sessionID, "err", err)
 			return fmt.Errorf("operator: resume fallback session for agent %q: %w", agent.ID, err)
 		}
 	}
 	o.registerPTYSession(agent.ID, sessionID, resumeResult)
+	if err := waitResumeLifecycle(resumeCtx, resumeResult); err != nil {
+		logger.Error("ResumeAgent: resume lifecycle ended with error", "agentID", agent.ID, "sessionID", sessionID, "err", err)
+		return err
+	}
 	logger.Info("ResumeAgent: completed", "agentID", agent.ID, "workspace", workspace, "name", name, "provider", provider, "sessionID", sessionID)
 	return nil
 }
@@ -624,7 +620,9 @@ func New() (operator.Operator, error) {
 		}
 	}
 
-	ptyDaemon := newPTYDaemonClient()
+	ptySocketPath := ptydaemon.DefaultSocketPath()
+	ptyDaemon := ptyclients.NewUnixSocketClient(ptySocketPath)
+	logger.Debug("New: pty daemon client configured", "socket", ptySocketPath)
 	op := &DefaultOperator{
 		config: config.OmniConfig{
 			Features: &config.Features{Memory: true},
@@ -650,11 +648,11 @@ func New() (operator.Operator, error) {
 		newCodeAgentForAgent: func(agentID string, provider codeagent.Provider, workDir, model string) (codeagent.CodeAgent, error) {
 			switch provider {
 			case providerClaude:
-				return claude.New(workDir, model, ptyDaemon)
+				return claude.New(workDir, model, &codexPTYAdapter{agentID: agentID, workDir: workDir, inner: ptyDaemon})
 			case providerCodex:
-				return codex.New(workDir, model, &codexPTYAdapter{agentID: agentID, inner: ptyDaemon})
+				return codex.New(workDir, model, &codexPTYAdapter{agentID: agentID, workDir: workDir, inner: ptyDaemon})
 			case providerGemini:
-				return gemini.New(workDir, model, ptyDaemon)
+				return gemini.New(workDir, model, &codexPTYAdapter{agentID: agentID, workDir: workDir, inner: ptyDaemon})
 			default:
 				return nil, fmt.Errorf("operator: unknown provider %q", provider)
 			}
@@ -1033,28 +1031,25 @@ func isSessionNotFoundError(err error) bool {
 	return strings.Contains(msg, "no session") || strings.Contains(msg, "session not found")
 }
 
+func resolvedSessionModel(ca codeagent.CodeAgent, fallback string) string {
+	if fallback != "" || ca == nil {
+		return fallback
+	}
+	cfg, err := ca.GetSessionConfig(codeagent.GetSessionConfigParams{})
+	if err != nil || cfg == nil {
+		return fallback
+	}
+	return strings.TrimSpace(cfg.Model.Model)
+}
+
 func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider codeagent.Provider, model string, interactive bool, requestedSessionID string) error {
 	if provider == "" {
 		provider = codeagent.Provider(operator.DefaultProvider)
 	}
 
-	// Only apply the global default for the default (claude) provider.
-	// Other providers (codex, gemini, …) handle their own defaults inside New().
-	if model == "" && provider == codeagent.Provider(operator.DefaultProvider) {
-		model = operator.DefaultModel
-	}
-
 	ca, err := o.createCodeAgent(agent, provider, string(agent.WorkspaceDir), model)
 	if err != nil {
 		return fmt.Errorf("operator: init code agent: %w", err)
-	}
-
-	// If model was left empty the factory applied its own default; read it back
-	// so logging and session-store persistence use the real model name.
-	if model == "" {
-		if cfg, cfgErr := ca.GetSessionConfig(codeagent.GetSessionConfigParams{}); cfgErr == nil && cfg.Model.Model != "" {
-			model = cfg.Model.Model
-		}
 	}
 
 	// Provision a sandbox runtime for this session when the provisioner is available.
@@ -1097,6 +1092,7 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 	if createResult != nil && createResult.ID != "" {
 		sessionID = createResult.ID
 	}
+	model = resolvedSessionModel(ca, model)
 
 	// Persist the session to the code session store.
 	if o.sessionStore != nil {
@@ -1115,8 +1111,14 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 		return nil
 	}
 
-	if _, err := ca.Resume(codeagent.ResumeSessionParams{ID: sessionID, SessionID: requestedSessionID}); err != nil {
+	resumeCtx, cancelResume := newResumeContext()
+	defer cancelResume()
+	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID})
+	if err != nil {
 		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
+	}
+	if err := waitResumeLifecycle(resumeCtx, resumeResult); err != nil {
+		return err
 	}
 	logger.Info("startAgentSession: interactive session resumed", "agentID", agent.ID, "provider", provider, "sessionID", sessionID)
 	return nil
