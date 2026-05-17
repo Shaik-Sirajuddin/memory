@@ -1,9 +1,9 @@
 package omniagent
 
 import (
+	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
-	"github.com/Shaik-Sirajuddin/memory/omniagent/config"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
@@ -45,6 +45,15 @@ type CodeSession struct {
 	IsActive       bool             `json:"is_active"`
 	Prompts        int              `json:"prompts"`
 	LastSyncPrompt int              `json:"last_sync_prompt"`
+	Status         string           `json:"status"`      // "running" | "ready" | "stopped"
+	StopReason     string           `json:"stop_reason"` // "tokens_exhausted" | "interrupted" | "network" | "other"
+
+	TokensInput        int     `json:"tokens_input"`
+	TokensOutput       int     `json:"tokens_output"`
+	TokensCachedInput  int     `json:"tokens_cached_input"`
+	TokensCachedOutput int     `json:"tokens_cached_output"`
+	TokensMax          int     `json:"tokens_max"`
+	TokensConsumedPct  float64 `json:"tokens_consumed_percent"`
 }
 
 type PersistentMemory struct {
