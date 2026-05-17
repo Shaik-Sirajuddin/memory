@@ -2,7 +2,10 @@ module github.com/Shaik-Sirajuddin/memory/svc/hook-operator
 
 go 1.26.1
 
-require github.com/Shaik-Sirajuddin/memory v0.0.0
+require (
+	github.com/Shaik-Sirajuddin/memory v0.0.0
+	github.com/Shaik-Sirajuddin/memory/pkg/log v0.0.0
+)
 
 require (
 	github.com/adrg/xdg v0.5.3 // indirect
@@ -27,3 +30,5 @@ require (
 )
 
 replace github.com/Shaik-Sirajuddin/memory => ../../omni
+
+replace github.com/Shaik-Sirajuddin/memory/pkg/log => ../../pkg/log

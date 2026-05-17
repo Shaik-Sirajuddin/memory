@@ -33,13 +33,10 @@ func (c *entryCache) set(entries map[string][]config.HookEntry) {
 }
 
 // get returns the registered hook entries for eventName.
-// Returns nil when the cache has expired or no entries exist for the event.
+// The watcher keeps entries fresh; no expiry check here.
 func (c *entryCache) get(eventName string) []config.HookEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if time.Now().After(c.expiry) {
-		return nil
-	}
 	return c.entries[eventName]
 }
 

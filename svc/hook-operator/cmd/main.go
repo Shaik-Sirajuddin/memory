@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	applog "github.com/Shaik-Sirajuddin/memory/log"
+	applog "github.com/Shaik-Sirajuddin/memory/pkg/log"
 	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/store/codesession"
 	"github.com/Shaik-Sirajuddin/memory/store/database"
