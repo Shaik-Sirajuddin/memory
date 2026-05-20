@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS code_sessions (
     last_sync_prompt INTEGER NOT NULL DEFAULT 0,
     status           TEXT NOT NULL DEFAULT 'ready',
     stop_reason      TEXT NOT NULL DEFAULT '',
+    is_interrupted   INTEGER NOT NULL DEFAULT 0,
     tokens_input     INTEGER NOT NULL DEFAULT 0,
     tokens_output    INTEGER NOT NULL DEFAULT 0,
     tokens_cached_input INTEGER NOT NULL DEFAULT 0,
@@ -216,8 +217,20 @@ func TestCreateAgent(t *testing.T) {
 		require.Len(t, runtime.createCalls, 1, "CreateAgent should create exactly one connector session")
 		assert.Equal(t, "operator-interactive", runtime.createCalls[0].Name, "Connector session should inherit the agent name")
 		assert.Equal(t, string(workspace), runtime.createCalls[0].WorkDir, "Connector session should target the workspace")
+		assert.Subset(t, runtime.createCalls[0].Envs, []string{
+			"MCP_AUTH_TOKEN=tunnel-mcp-dev-token",
+			"MCP_SENDER_ID=operator-interactive",
+			"MCP_SENDER_TYPE=mcp",
+			"MCP_AGENT_WORKSPACE=" + string(workspace),
+		}, "CreateAgent should pass MCP environment variables to connector create")
 		require.Len(t, runtime.resumeCalls, 1, "Interactive CreateAgent should resume the created session")
 		assert.Equal(t, runtime.createResultID, runtime.resumeCalls[0].ID, "Resume should target the created session ID")
+		assert.Subset(t, runtime.resumeCalls[0].Envs, []string{
+			"MCP_AUTH_TOKEN=tunnel-mcp-dev-token",
+			"MCP_SENDER_ID=operator-interactive",
+			"MCP_SENDER_TYPE=mcp",
+			"MCP_AGENT_WORKSPACE=" + string(workspace),
+		}, "CreateAgent should pass MCP environment variables to connector resume")
 	})
 
 	t.Run("NonInteractiveCreateSkipsResume", func(t *testing.T) {
@@ -424,7 +437,19 @@ func TestResumeAgent(t *testing.T) {
 		})
 		require.NoError(t, err, "ResumeAgent should fallback to create when runtime reports missing session")
 		require.Len(t, resumeRuntime.createCalls, 1, "ResumeAgent fallback should create a new session when missing")
+		assert.Subset(t, resumeRuntime.createCalls[0].Envs, []string{
+			"MCP_AUTH_TOKEN=tunnel-mcp-dev-token",
+			"MCP_SENDER_ID=operator-resume-fallback",
+			"MCP_SENDER_TYPE=mcp",
+			"MCP_AGENT_WORKSPACE=" + string(workspace),
+		}, "ResumeAgent fallback should pass MCP environment variables to connector create")
 		require.Len(t, resumeRuntime.resumeCalls, 2, "ResumeAgent should attempt resume again after fallback create")
+		assert.Subset(t, resumeRuntime.resumeCalls[1].Envs, []string{
+			"MCP_AUTH_TOKEN=tunnel-mcp-dev-token",
+			"MCP_SENDER_ID=operator-resume-fallback",
+			"MCP_SENDER_TYPE=mcp",
+			"MCP_AGENT_WORKSPACE=" + string(workspace),
+		}, "ResumeAgent fallback should pass MCP environment variables to connector resume")
 	})
 
 	t.Run("InitIfMissingCreatesAgent", func(t *testing.T) {
@@ -481,6 +506,18 @@ func TestSwitchProvider(t *testing.T) {
 		require.NotNil(t, active.Model, "Active session model should be stored")
 		assert.Equal(t, codeagent.Provider("codex"), active.Model.Provider, "SwitchProvider should set active provider to requested value")
 		require.Len(t, switchRuntime.resumeCalls, 1, "SwitchProvider should resume the target provider session")
+		assert.Subset(t, switchRuntime.createCalls[0].Envs, []string{
+			"MCP_AUTH_TOKEN=tunnel-mcp-dev-token",
+			"MCP_SENDER_ID=switch-me",
+			"MCP_SENDER_TYPE=mcp",
+			"MCP_AGENT_WORKSPACE=" + string(workspace),
+		}, "SwitchProvider should pass MCP environment variables to connector create")
+		assert.Subset(t, switchRuntime.resumeCalls[0].Envs, []string{
+			"MCP_AUTH_TOKEN=tunnel-mcp-dev-token",
+			"MCP_SENDER_ID=switch-me",
+			"MCP_SENDER_TYPE=mcp",
+			"MCP_AGENT_WORKSPACE=" + string(workspace),
+		}, "SwitchProvider should pass MCP environment variables to connector resume")
 	})
 
 	t.Run("ReusesExistingProviderSessionWhenCleanStartDisabled", func(t *testing.T) {

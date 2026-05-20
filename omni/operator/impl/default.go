@@ -37,6 +37,9 @@ const (
 	providerClaude codeagent.Provider = "claude"
 	providerCodex  codeagent.Provider = "codex"
 	providerGemini codeagent.Provider = "gemini"
+
+	mcpAuthToken  = "tunnel-mcp-dev-token"
+	mcpSenderType = "mcp"
 )
 
 // DefaultOperator implements [Operator].
@@ -193,12 +196,14 @@ func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) e
 		if newID == "" {
 			newID = uuid.NewString()
 		}
+		envs := mcpSessionEnvs(agent)
 		createResult, err := ca.Create(codeagent.CreateSessionParams{
 			ID:        newID,
 			Name:      agent.Name,
 			Model:     model,
 			WorkDir:   string(agent.WorkspaceDir),
 			SessionID: requestedSessionID,
+			Envs:      envs,
 			RunTime:   sbxRuntime,
 		})
 		if err != nil {
@@ -244,7 +249,7 @@ func (o *DefaultOperator) SwitchProvider(params operator.SwitchProviderParams) e
 	}
 	resumeCtx, cancelResume := newResumeContext()
 	defer cancelResume()
-	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: target.Id})
+	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: target.Id, Envs: mcpSessionEnvs(agent)})
 	if err != nil {
 		return fmt.Errorf("operator: switch provider: resume session %q: %w", target.Id, err)
 	}
@@ -542,7 +547,8 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 	resumeCtx, cancelResume := newResumeContext()
 	defer cancelResume()
 
-	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
+	envs := mcpSessionEnvs(agent)
+	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID, Envs: envs, RunTime: sbxRuntime})
 	if err != nil {
 		if !isSessionNotFoundError(err) {
 			logger.Error("ResumeAgent: resume failed", "agentID", agent.ID, "err", err)
@@ -555,6 +561,7 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 			Model:     model,
 			WorkDir:   string(agent.WorkspaceDir),
 			SessionID: requestedSessionID,
+			Envs:      envs,
 			RunTime:   sbxRuntime,
 		})
 		if createErr != nil {
@@ -574,7 +581,7 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 				logger.Warn("ResumeAgent: fallback session store sync failed", "agentID", agent.ID, "sessionID", sessionID, "err", storeErr)
 			}
 		}
-		resumeResult, err = ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID, RunTime: sbxRuntime})
+		resumeResult, err = ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID, Envs: envs, RunTime: sbxRuntime})
 		if err != nil {
 			logger.Error("ResumeAgent: fallback resume failed", "agentID", agent.ID, "sessionID", sessionID, "err", err)
 			return fmt.Errorf("operator: resume fallback session for agent %q: %w", agent.ID, err)
@@ -1042,6 +1049,22 @@ func resolvedSessionModel(ca codeagent.CodeAgent, fallback string) string {
 	return strings.TrimSpace(cfg.Model.Model)
 }
 
+func mcpSessionEnvs(agent *omniagent.AgentInfo) []string {
+	if agent == nil {
+		return nil
+	}
+	workspace := strings.TrimSpace(string(agent.WorkspaceDir))
+	senderID := strings.TrimSpace(agent.Name)
+	envs := []string{
+		"MCP_AUTH_TOKEN=" + mcpAuthToken,
+		"MCP_SENDER_ID=" + senderID,
+		"MCP_SENDER_TYPE=" + mcpSenderType,
+		"MCP_AGENT_WORKSPACE=" + workspace,
+	}
+	logger.Debug("mcpSessionEnvs: built session envs", "agentID", agent.ID, "senderID", senderID, "workspace", workspace, "envKeys", []string{"MCP_AUTH_TOKEN", "MCP_SENDER_ID", "MCP_SENDER_TYPE", "MCP_AGENT_WORKSPACE"})
+	return envs
+}
+
 func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider codeagent.Provider, model string, interactive bool, requestedSessionID string) error {
 	if provider == "" {
 		provider = codeagent.Provider(operator.DefaultProvider)
@@ -1076,12 +1099,14 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 	if requestedSessionID != "" {
 		createID = requestedSessionID
 	}
+	envs := mcpSessionEnvs(agent)
 	createResult, err := ca.Create(codeagent.CreateSessionParams{
 		ID:        createID,
 		Name:      agent.Name,
 		Model:     model,
 		WorkDir:   string(agent.WorkspaceDir),
 		SessionID: requestedSessionID,
+		Envs:      envs,
 		RunTime:   sbxRuntime,
 	})
 	if err != nil {
@@ -1113,7 +1138,7 @@ func (o *DefaultOperator) startAgentSession(agent *omniagent.AgentInfo, provider
 
 	resumeCtx, cancelResume := newResumeContext()
 	defer cancelResume()
-	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID})
+	resumeResult, err := ca.Resume(codeagent.ResumeSessionParams{Context: resumeCtx, ID: sessionID, SessionID: requestedSessionID, Envs: envs})
 	if err != nil {
 		return fmt.Errorf("operator: resume session for agent %q: %w", agent.ID, err)
 	}
