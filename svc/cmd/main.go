@@ -17,6 +17,7 @@ var Version = "dev"
 func main() {
 	disablePTY := flag.Bool("disable-ptydaemon", false, "Disable the PTY daemon service")
 	disableHook := flag.Bool("disable-hook-operator", false, "Disable the hook operator service")
+	disableMCP := flag.Bool("disable-axolink-mcp", false, "Disable the Axolink MCP service")
 	printVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -37,6 +38,9 @@ func main() {
 		HookOperator: HookOperatorConfig{
 			ServiceConfig: ServiceConfig{Enabled: !*disableHook},
 			SocketPath:    envOr("HOOK_OPERATOR_SOCKET", "/run/omni-"+username+"/hook-operator.sock"),
+		},
+		AxolinkMCP: AxolinkMCPConfig{
+			ServiceConfig: ServiceConfig{Enabled: !*disableMCP},
 		},
 	}
 
