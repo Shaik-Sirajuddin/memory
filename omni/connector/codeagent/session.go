@@ -25,6 +25,7 @@ type CreateSessionParams struct {
 	PermissionMode PermissionMode
 	SystemPrompt   string
 	SessionID      string
+	Envs           []string
 	RunTime        *sandbox.SandboxRuntime
 }
 
@@ -39,6 +40,7 @@ type ResumeSessionParams struct {
 	ID          string
 	ForkSession bool
 	SessionID   string
+	Envs        []string
 	RunTime     *sandbox.SandboxRuntime
 }
 

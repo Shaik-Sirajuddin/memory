@@ -71,10 +71,11 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	workDir := a.workDir
 	sessionID := a.sessionID
 	binPath := a.binPath
+	env := mergeEnv(os.Environ(), p.Envs)
 	a.mu.Unlock()
 
 	// Verify binary.
-	out, err := captureOutput(workDir, binPath, "--version")
+	out, err := captureOutputEnv(workDir, env, binPath, "--version")
 	if err != nil {
 		return nil, fmt.Errorf("claude: create: binary unreachable: %w", err)
 	}
@@ -83,6 +84,7 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 	// Verify authentication.
 	authCmd := exec.Command(binPath, "auth", "status")
 	authCmd.Dir = workDir
+	authCmd.Env = env
 	if err := authCmd.Run(); err != nil {
 		logger.Warn("Create: user not authenticated", "err", err)
 		return nil, fmt.Errorf("claude: create: not authenticated — run 'claude auth login' first")
@@ -111,7 +113,7 @@ func (a *claudeAgent) Create(p codeagent.CreateSessionParams) (*codeagent.Create
 		"--output-format", "json",
 		"--max-turns", "1",
 	}
-	seedOut, seedErr := execOutput(workDir, rt, binPath, seedArgs...)
+	seedOut, seedErr := execOutputEnv(workDir, rt, env, binPath, seedArgs...)
 	if seedErr != nil {
 		return nil, fmt.Errorf("claude: create: seed session: %w", seedErr)
 	}
@@ -141,6 +143,7 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 	rt := a.sbxRuntime
 	client := a.ptyClient
 	currentSessionID := a.sessionID
+	env := mergeEnv(os.Environ(), p.Envs)
 	a.mu.Unlock()
 
 	// Prefer the explicit Claude session ID when provided; fall back to p.ID.
@@ -185,7 +188,7 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		command := append([]string{binPath}, args...)
 		started := false
 		if info == nil || info.Status != "active" {
-			if err := client.Start(resumeID, command, os.Environ(), workDir); err != nil {
+			if err := client.Start(resumeID, command, env, workDir); err != nil {
 				return nil, fmt.Errorf("claude: resume: pty start: %w", err)
 			}
 			started = true
@@ -215,6 +218,7 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = workDir
+	cmd.Env = env
 
 	// Blocking mode: open /dev/tty directly so the child gets a proper
 	// controlling terminal for raw mode. Pipe-like fds cause EIO on setRawMode.
@@ -506,6 +510,13 @@ func captureOutput(dir, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+func captureOutputEnv(dir string, env []string, name string, args ...string) (string, error) {
+	cmd := localCommand(dir, name, args...)
+	cmd.Env = env
+	out, err := cmd.Output()
+	return string(out), err
+}
+
 func localCommand(workDir, name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = workDir
@@ -525,6 +536,52 @@ func execOutput(workDir string, rt sandbox.SandboxRuntime, name string, args ...
 		return "", runtimeErrorf("claude exec", res, err)
 	}
 	return strings.TrimSpace(res.Stdout), nil
+}
+
+func execOutputEnv(workDir string, rt sandbox.SandboxRuntime, env []string, name string, args ...string) (string, error) {
+	if rt == nil {
+		cmd := localCommand(workDir, name, args...)
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil {
+			return "", wrapExitError("claude exec", err)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	res, err := rt.Capture(name, args)
+	if err != nil {
+		return "", runtimeErrorf("claude exec", res, err)
+	}
+	return strings.TrimSpace(res.Stdout), nil
+}
+
+func mergeEnv(base, overrides []string) []string {
+	if len(overrides) == 0 {
+		return append([]string(nil), base...)
+	}
+
+	merged := append([]string(nil), base...)
+	index := make(map[string]int, len(merged))
+	for i, entry := range merged {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			index[key] = i
+		}
+	}
+	for _, entry := range overrides {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			merged = append(merged, entry)
+			continue
+		}
+		if i, exists := index[key]; exists {
+			merged[i] = entry
+			continue
+		}
+		index[key] = len(merged)
+		merged = append(merged, entry)
+	}
+	return merged
 }
 
 func runtimeErrorf(op string, res *sandbox.ExecutionResult, err error) error {
