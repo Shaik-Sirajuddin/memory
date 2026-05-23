@@ -1,9 +1,9 @@
 package hooks
 
 const (
-	PreToolUse         HookID = "pre_tool_use"
-	PostToolUse        HookID = "post_tool_use"
-	PostToolUseFailure HookID = "post_tool_use_failure"
+	PreToolUse         HookID = "PreToolUse"
+	PostToolUse        HookID = "PostToolUse"
+	PostToolUseFailure HookID = "PostToolUseFailure"
 )
 
 type PreToolUseParams struct {

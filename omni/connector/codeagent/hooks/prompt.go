@@ -1,8 +1,8 @@
 package hooks
 
 const (
-	PrePrompt  HookID = "pre_prompt"
-	PostPrompt HookID = "post_prompt"
+	PrePrompt  HookID = "UserPromptSubmit"
+	PostPrompt HookID = "Stop"
 )
 
 type PrePromptInputParams struct {
