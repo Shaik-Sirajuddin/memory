@@ -16,12 +16,12 @@ import (
 )
 
 // NewLogger returns a structured logger tagged with the given key/value pair.
+// Writes to stderr always; also fans out to any OTLP targets registered via InitOtel.
 func NewLogger(key, component string) *slog.Logger {
 	level := resolveLevel()
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: level == slog.LevelDebug,
-	})).With(key, component)
+	opts := &slog.HandlerOptions{Level: level, AddSource: level == slog.LevelDebug}
+	handlers := append([]slog.Handler{slog.NewTextHandler(os.Stderr, opts)}, activeHandlers()...)
+	return slog.New(multiHandler{handlers}).With(key, component)
 }
 
 func resolveLevel() slog.Level {
