@@ -1,8 +1,9 @@
 package hookoperator
 
 import (
-	applog "github.com/Shaik-Sirajuddin/memory/log"
 	"log/slog"
+
+	applog "github.com/Shaik-Sirajuddin/memory/pkg/log"
 )
 
 var logger *slog.Logger = applog.NewLogger("component", "hook-operator")

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/internal"
-	ptylog "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/log"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
@@ -61,10 +60,10 @@ func (d *Daemon) ListenAndServe(ctx context.Context, socketPath string) error {
 		return err
 	}
 	if err := os.Chmod(socketPath, 0600); err != nil {
-		ptylog.Logger.Warn("failed to set socket permissions", "path", socketPath, "err", err)
+		ptylog.Warn("failed to set socket permissions", "path", socketPath, "err", err)
 	}
 
-	ptylog.Logger.Info("ptyunix listening", "socket", socketPath)
+	ptylog.Info("ptyunix listening", "socket", socketPath)
 
 	go func() {
 		<-ctx.Done()
@@ -91,11 +90,11 @@ func (d *Daemon) handleConn(conn *net.UnixConn) {
 
 	var req Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
-		ptylog.Logger.Debug("failed to decode request", "err", err)
+		ptylog.Debug("failed to decode request", "err", err)
 		return
 	}
 
-	ptylog.Logger.Debug("request received", "op", req.Op, "agent_id", req.AgentID, "session_id", req.SessionID)
+	ptylog.Debug("request received", "op", req.Op, "agent_id", req.AgentID, "session_id", req.SessionID)
 
 	switch req.Op {
 	case "start":
@@ -139,12 +138,12 @@ func (d *Daemon) handleStart(conn *net.UnixConn, req Request) {
 		return
 	}
 
-	ptylog.Logger.Debug("starting in-memory session", "session_id", req.SessionID, "command", req.Command)
+	ptylog.Debug("starting in-memory session", "session_id", req.SessionID, "command", req.Command)
 
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		ptylog.Logger.Error("pty start failed", "err", err, "session_id", req.SessionID)
+		ptylog.Error("pty start failed", "err", err, "session_id", req.SessionID)
 		respond(conn, Response{Error: err.Error()})
 		return
 	}
@@ -160,10 +159,10 @@ func (d *Daemon) handleStart(conn *net.UnixConn, req Request) {
 		d.mu.Lock()
 		delete(d.sessions, req.SessionID)
 		d.mu.Unlock()
-		ptylog.Logger.Debug("in-memory session exited", "session_id", req.SessionID)
+		ptylog.Debug("in-memory session exited", "session_id", req.SessionID)
 	}()
 
-	ptylog.Logger.Info("in-memory session started", "session_id", req.SessionID, "pid", cmd.Process.Pid)
+	ptylog.Info("in-memory session started", "session_id", req.SessionID, "pid", cmd.Process.Pid)
 	respond(conn, Response{OK: true, SessionID: req.SessionID})
 }
 
@@ -188,16 +187,16 @@ func (d *Daemon) handleCreate(conn *net.UnixConn, req Request) {
 		Dir:       req.Dir,
 	}
 
-	ptylog.Logger.Debug("creating session", "agent_id", p.AgentID, "session_id", p.SessionID, "command", p.Command)
+	ptylog.Debug("creating session", "agent_id", p.AgentID, "session_id", p.SessionID, "command", p.Command)
 
 	info, err := d.inner.Create(p)
 	if err != nil {
-		ptylog.Logger.Error("create session failed", "err", err, "session_id", req.SessionID)
+		ptylog.Error("create session failed", "err", err, "session_id", req.SessionID)
 		respond(conn, Response{Error: err.Error()})
 		return
 	}
 
-	ptylog.Logger.Info("session created", "agent_id", info.AgentID, "session_id", info.SessionID, "pid", info.PID)
+	ptylog.Info("session created", "agent_id", info.AgentID, "session_id", info.SessionID, "pid", info.PID)
 	respond(conn, Response{OK: true, SessionID: info.SessionID})
 }
 
@@ -208,15 +207,15 @@ func (d *Daemon) handleAdopt(conn *net.UnixConn, req Request) {
 		return
 	}
 
-	ptylog.Logger.Debug("adopting process", "agent_id", req.AgentID, "session_id", req.SessionID, "pid", req.PID)
+	ptylog.Debug("adopting process", "agent_id", req.AgentID, "session_id", req.SessionID, "pid", req.PID)
 
 	if err := d.inner.Adopt(req.AgentID, req.SessionID, req.PID, req.SubmitKey); err != nil {
-		ptylog.Logger.Error("adopt failed", "err", err, "session_id", req.SessionID, "pid", req.PID)
+		ptylog.Error("adopt failed", "err", err, "session_id", req.SessionID, "pid", req.PID)
 		respond(conn, Response{Error: err.Error()})
 		return
 	}
 
-	ptylog.Logger.Info("process adopted", "agent_id", req.AgentID, "session_id", req.SessionID, "pid", req.PID)
+	ptylog.Info("process adopted", "agent_id", req.AgentID, "session_id", req.SessionID, "pid", req.PID)
 	respond(conn, Response{OK: true})
 }
 
@@ -227,16 +226,16 @@ func (d *Daemon) handleAttach(conn *net.UnixConn, req Request) {
 	// Resolve client PID before doing anything else so we can guard accurately.
 	clientPID, err := peerPID(conn)
 	if err != nil {
-		ptylog.Logger.Warn("attach: SO_PEERCRED failed, skipping guard", "err", err, "session_id", req.SessionID)
+		ptylog.Warn("attach: SO_PEERCRED failed, skipping guard", "err", err, "session_id", req.SessionID)
 	}
 
-	ptylog.Logger.Debug("attach guard check", "session_id", req.SessionID, "client_pid", clientPID)
+	ptylog.Debug("attach guard check", "session_id", req.SessionID, "client_pid", clientPID)
 
 	// Reject if a live client is already attached to this specific session.
 	if prev, ok := d.attachedPIDs.Load(req.SessionID); ok {
 		prevPID := prev.(int)
 		if processExists(prevPID) {
-			ptylog.Logger.Warn("attach denied — session already attached", "session_id", req.SessionID, "holder_pid", prevPID)
+			ptylog.Warn("attach denied — session already attached", "session_id", req.SessionID, "holder_pid", prevPID)
 			respond(conn, Response{
 				OK:    false,
 				Error: fmt.Sprintf("session already attached (pid %d)", prevPID),
@@ -244,7 +243,7 @@ func (d *Daemon) handleAttach(conn *net.UnixConn, req Request) {
 			return
 		}
 		// Previous client has exited; allow re-attach.
-		ptylog.Logger.Debug("attach: previous client gone, allowing re-attach", "session_id", req.SessionID, "old_pid", prevPID)
+		ptylog.Debug("attach: previous client gone, allowing re-attach", "session_id", req.SessionID, "old_pid", prevPID)
 		d.attachedPIDs.Delete(req.SessionID)
 	}
 
@@ -257,21 +256,21 @@ func (d *Daemon) handleAttach(conn *net.UnixConn, req Request) {
 	rights := unix.UnixRights(int(ptmx.Fd()))
 	payload, err := json.Marshal(Response{OK: true})
 	if err != nil {
-		ptylog.Logger.Error("attach response encode failed", "err", err, "session_id", req.SessionID)
+		ptylog.Error("attach response encode failed", "err", err, "session_id", req.SessionID)
 		respond(conn, Response{Error: err.Error()})
 		return
 	}
 	payload = append(payload, '\n')
 
 	if _, _, err := conn.WriteMsgUnix(payload, rights, nil); err != nil {
-		ptylog.Logger.Error("SCM_RIGHTS send failed", "err", err, "session_id", req.SessionID)
+		ptylog.Error("SCM_RIGHTS send failed", "err", err, "session_id", req.SessionID)
 		return
 	}
 
 	if clientPID > 0 {
 		d.attachedPIDs.Store(req.SessionID, clientPID)
 	}
-	ptylog.Logger.Info("fd granted to client", "session_id", req.SessionID, "client_pid", clientPID)
+	ptylog.Info("fd granted to client", "session_id", req.SessionID, "client_pid", clientPID)
 }
 
 // handlePipe writes raw bytes to the PTY master.
@@ -281,10 +280,10 @@ func (d *Daemon) handlePipe(conn *net.UnixConn, req Request) {
 		return
 	}
 
-	ptylog.Logger.Debug("pipe", "agent_id", req.AgentID, "session_id", req.SessionID, "bytes", len(req.Data))
+	ptylog.Debug("pipe", "agent_id", req.AgentID, "session_id", req.SessionID, "bytes", len(req.Data))
 
 	if err := d.inner.Pipe(req.AgentID, req.SessionID, req.Data); err != nil {
-		ptylog.Logger.Error("pipe failed", "err", err, "session_id", req.SessionID)
+		ptylog.Error("pipe failed", "err", err, "session_id", req.SessionID)
 		respond(conn, Response{Error: err.Error()})
 		return
 	}
@@ -293,7 +292,7 @@ func (d *Daemon) handlePipe(conn *net.UnixConn, req Request) {
 
 // handleExec writes raw input to the PTY master (backward-compatible exec op).
 func (d *Daemon) handleExec(conn *net.UnixConn, req Request) {
-	ptylog.Logger.Debug("exec", "agent_id", req.AgentID, "session_id", req.SessionID)
+	ptylog.Debug("exec", "agent_id", req.AgentID, "session_id", req.SessionID)
 
 	if d.inner != nil {
 		if err := d.inner.Pipe(req.AgentID, req.SessionID, []byte(req.Input)); err != nil {
@@ -301,7 +300,7 @@ func (d *Daemon) handleExec(conn *net.UnixConn, req Request) {
 				respond(conn, Response{Error: "session not found"})
 				return
 			}
-			ptylog.Logger.Error("exec pipe failed", "err", err, "session_id", req.SessionID)
+			ptylog.Error("exec pipe failed", "err", err, "session_id", req.SessionID)
 			respond(conn, Response{Error: err.Error()})
 			return
 		}
@@ -334,7 +333,7 @@ func (d *Daemon) handleKeybind(conn *net.UnixConn, req Request) {
 		return
 	}
 
-	ptylog.Logger.Debug("keybind", "session_id", req.SessionID, "key", req.Key)
+	ptylog.Debug("keybind", "session_id", req.SessionID, "key", req.Key)
 
 	if d.inner != nil {
 		if err := d.inner.Pipe(req.AgentID, req.SessionID, seq); err != nil {
@@ -363,7 +362,7 @@ func (d *Daemon) handleKeybind(conn *net.UnixConn, req Request) {
 }
 
 func (d *Daemon) handleStop(conn *net.UnixConn, req Request) {
-	ptylog.Logger.Debug("stop", "agent_id", req.AgentID, "session_id", req.SessionID)
+	ptylog.Debug("stop", "agent_id", req.AgentID, "session_id", req.SessionID)
 
 	if d.inner != nil {
 		if err := d.inner.Stop(req.AgentID, req.SessionID); err != nil {
@@ -371,12 +370,12 @@ func (d *Daemon) handleStop(conn *net.UnixConn, req Request) {
 				respond(conn, Response{OK: true}) // idempotent
 				return
 			}
-			ptylog.Logger.Error("stop failed", "err", err, "session_id", req.SessionID)
+			ptylog.Error("stop failed", "err", err, "session_id", req.SessionID)
 			respond(conn, Response{Error: err.Error()})
 			return
 		}
 		d.attachedPIDs.Delete(req.SessionID)
-		ptylog.Logger.Info("session stopped", "agent_id", req.AgentID, "session_id", req.SessionID)
+		ptylog.Info("session stopped", "agent_id", req.AgentID, "session_id", req.SessionID)
 		respond(conn, Response{OK: true})
 		return
 	}
@@ -398,12 +397,12 @@ func (d *Daemon) handleStop(conn *net.UnixConn, req Request) {
 }
 
 func (d *Daemon) handleList(conn *net.UnixConn, req Request) {
-	ptylog.Logger.Debug("list", "agent_id", req.AgentID)
+	ptylog.Debug("list", "agent_id", req.AgentID)
 
 	if d.inner != nil {
 		records, err := d.inner.ListSessions(req.AgentID)
 		if err != nil {
-			ptylog.Logger.Error("list sessions failed", "err", err)
+			ptylog.Error("list sessions failed", "err", err)
 			respond(conn, Response{Error: err.Error()})
 			return
 		}
@@ -411,7 +410,7 @@ func (d *Daemon) handleList(conn *net.UnixConn, req Request) {
 		for _, r := range records {
 			entries = append(entries, recordToEntry(r))
 		}
-		ptylog.Logger.Debug("list response", "count", len(entries))
+		ptylog.Debug("list response", "count", len(entries))
 		respond(conn, Response{OK: true, Sessions: entries})
 		return
 	}
@@ -426,12 +425,12 @@ func (d *Daemon) handleList(conn *net.UnixConn, req Request) {
 }
 
 func (d *Daemon) handleGet(conn *net.UnixConn, req Request) {
-	ptylog.Logger.Debug("get", "agent_id", req.AgentID, "session_id", req.SessionID)
+	ptylog.Debug("get", "agent_id", req.AgentID, "session_id", req.SessionID)
 
 	if d.inner != nil {
 		rec, err := d.inner.GetSession(req.AgentID, req.SessionID)
 		if err != nil {
-			ptylog.Logger.Error("get session failed", "err", err, "session_id", req.SessionID)
+			ptylog.Error("get session failed", "err", err, "session_id", req.SessionID)
 			respond(conn, Response{Error: err.Error()})
 			return
 		}
@@ -458,7 +457,7 @@ func (d *Daemon) handleGet(conn *net.UnixConn, req Request) {
 
 // handleListAttached returns the client process currently attached to the session.
 func (d *Daemon) handleListAttached(conn *net.UnixConn, req Request) {
-	ptylog.Logger.Debug("list-attached", "session_id", req.SessionID)
+	ptylog.Debug("list-attached", "session_id", req.SessionID)
 	var procs []AttachedProcess
 	if pid, ok := d.attachedPIDs.Load(req.SessionID); ok {
 		p := pid.(int)
@@ -468,7 +467,7 @@ func (d *Daemon) handleListAttached(conn *net.UnixConn, req Request) {
 			d.attachedPIDs.Delete(req.SessionID)
 		}
 	}
-	ptylog.Logger.Debug("list-attached response", "session_id", req.SessionID, "count", len(procs))
+	ptylog.Debug("list-attached response", "session_id", req.SessionID, "count", len(procs))
 	respond(conn, Response{OK: true, SessionID: req.SessionID, Processes: procs})
 }
 
@@ -482,7 +481,7 @@ func (d *Daemon) handleMetaAttached(conn *net.UnixConn, req Request) {
 			d.attachedPIDs.Delete(req.SessionID)
 		}
 	}
-	ptylog.Logger.Debug("meta-attached", "session_id", req.SessionID, "count", count)
+	ptylog.Debug("meta-attached", "session_id", req.SessionID, "count", count)
 	respond(conn, Response{OK: true, SessionID: req.SessionID, Count: count})
 }
 

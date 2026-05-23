@@ -8,24 +8,26 @@ import (
 	"syscall"
 
 	ptydaemon "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon"
-	ptylog "github.com/Shaik-Sirajuddin/memory/svc/ptydaemon/log"
+	pkglog "github.com/Shaik-Sirajuddin/memory/pkg/log"
 )
+
+var logger = pkglog.NewLogger("component", "ptydaemon")
 
 func main() {
 	socketPath := ptydaemon.DefaultSocketPath()
 	dbPath := envOr("PTYDAEMON_DB", "/var/lib/omni-"+currentUsername()+"/ptydaemon.db")
 
-	ptylog.Logger.Info("ptydaemon starting", "socket", socketPath, "db", dbPath)
+	logger.Info("ptydaemon starting", "socket", socketPath, "db", dbPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if err := ptydaemon.Run(ctx, socketPath, dbPath); err != nil {
-		ptylog.Logger.Error("ptydaemon error", "err", err)
+		logger.Error("ptydaemon error", "err", err)
 		os.Exit(1)
 	}
 
-	ptylog.Logger.Info("ptydaemon stopped")
+	logger.Info("ptydaemon stopped")
 }
 
 func envOr(key, def string) string {

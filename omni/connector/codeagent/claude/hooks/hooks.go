@@ -213,18 +213,14 @@ func eventName(name string, entry config.HookEntry) string {
 
 func claudeEventName(eventName string) (string, bool) {
 	switch eventName {
-	case string(codehooks.PreToolUse):
-		return "PreToolUse", true
-	case string(codehooks.PostToolUse):
-		return "PostToolUse", true
-	case string(codehooks.PostToolUseFailure):
-		return "PostToolUseFailure", true
-	case string(codehooks.PreSessionStart), string(codehooks.PostSessionStart):
-		return "SessionStart", true
-	case string(codehooks.PrePrompt):
-		return "UserPromptSubmit", true
-	case string(codehooks.PostPrompt):
-		return "Stop", true
+	case string(codehooks.PreToolUse),
+		string(codehooks.PostToolUse),
+		string(codehooks.PostToolUseFailure),
+		string(codehooks.PreSessionStart),
+		string(codehooks.PostSessionStart),
+		string(codehooks.PrePrompt),
+		string(codehooks.PostPrompt):
+		return eventName, true
 	default:
 		return "", false
 	}
@@ -232,18 +228,14 @@ func claudeEventName(eventName string) (string, bool) {
 
 func abstractEventName(claudeEvent string) (string, bool) {
 	switch claudeEvent {
-	case "PreToolUse":
-		return string(codehooks.PreToolUse), true
-	case "PostToolUse":
-		return string(codehooks.PostToolUse), true
-	case "PostToolUseFailure":
-		return string(codehooks.PostToolUseFailure), true
-	case "SessionStart":
-		return string(codehooks.PreSessionStart), true
-	case "UserPromptSubmit":
-		return string(codehooks.PrePrompt), true
-	case "Stop":
-		return string(codehooks.PostPrompt), true
+	case string(codehooks.PreToolUse),
+		string(codehooks.PostToolUse),
+		string(codehooks.PostToolUseFailure),
+		string(codehooks.PreSessionStart),
+		string(codehooks.PostSessionStart),
+		string(codehooks.PrePrompt),
+		string(codehooks.PostPrompt):
+		return claudeEvent, true
 	default:
 		return "", false
 	}
@@ -251,12 +243,13 @@ func abstractEventName(claudeEvent string) (string, bool) {
 
 func claudeEventOrder() []string {
 	return []string{
-		"PreToolUse",
-		"PostToolUse",
-		"PostToolUseFailure",
-		"SessionStart",
-		"UserPromptSubmit",
-		"Stop",
+		string(codehooks.PreToolUse),
+		string(codehooks.PostToolUse),
+		string(codehooks.PostToolUseFailure),
+		string(codehooks.PreSessionStart),
+		string(codehooks.PostSessionStart),
+		string(codehooks.PrePrompt),
+		string(codehooks.PostPrompt),
 	}
 }
 

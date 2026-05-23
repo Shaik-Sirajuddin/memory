@@ -45,8 +45,9 @@ type CodeSession struct {
 	IsActive       bool             `json:"is_active"`
 	Prompts        int              `json:"prompts"`
 	LastSyncPrompt int              `json:"last_sync_prompt"`
-	Status         string           `json:"status"`      // "running" | "ready" | "stopped"
-	StopReason     string           `json:"stop_reason"` // "tokens_exhausted" | "interrupted" | "network" | "other"
+	Status         string           `json:"status"`       // "running" | "ready" | "stopped"
+	StopReason     string           `json:"stop_reason"`  // "tokens_exhausted" | "interrupted" | "network" | "other"
+	IsInterrupted  bool             `json:"is_interrupted"`
 
 	TokensInput        int     `json:"tokens_input"`
 	TokensOutput       int     `json:"tokens_output"`

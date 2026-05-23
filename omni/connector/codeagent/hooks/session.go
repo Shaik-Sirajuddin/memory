@@ -1,8 +1,8 @@
 package hooks
 
 const (
-	PreSessionStart  HookID = "pre_session_start"
-	PostSessionStart HookID = "post_session_start"
+	PreSessionStart  HookID = "PreSessionStart"
+	PostSessionStart HookID = "PostSessionStart"
 )
 
 type PreSessionStartParams struct {

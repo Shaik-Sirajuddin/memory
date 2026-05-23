@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omni.sh/config/v1/config_schema.json",
+  "$ref": "#/$defs/OmniConfig",
+  "$defs": {
+    "Developer": {
+      "properties": {
+        "debug": {
+          "type": "boolean",
+          "title": "Debug",
+          "description": "Enable debug logging"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "debug"
+      ]
+    },
+    "HookEntry": {
+      "properties": {
+        "command": {
+          "type": "string",
+          "title": "Command",
+          "description": "Shell command to run when the hook event fires"
+        },
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Args",
+          "description": "Arguments passed to the hook command"
+        },
+        "timeout": {
+          "type": "number",
+          "title": "Timeout",
+          "description": "Timeout in seconds for this hook (overrides global timeout)"
+        },
+        "url": {
+          "type": "string",
+          "title": "URL",
+          "description": "HTTP endpoint invoked for webhook-style hooks"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "OmniConfig": {
+      "properties": {
+        "memory": {
+          "type": "boolean",
+          "title": "Memory",
+          "description": "Enable the memory subsystem"
+        },
+        "auto_sync": {
+          "type": "boolean",
+          "title": "Auto Sync",
+          "description": "Propagate config changes from any agent to all configured agents"
+        },
+        "random_agent_names": {
+          "type": "boolean",
+          "title": "Random Agent Names",
+          "description": "Assign random display names to agents"
+        },
+        "agent": {
+          "$ref": "#/$defs/Settings",
+          "title": "Agent Settings",
+          "description": "Common settings applied to the code agent"
+        },
+        "dev": {
+          "$ref": "#/$defs/Developer",
+          "title": "Developer",
+          "description": "Developer and debug flags"
+        },
+        "otel": {
+          "$ref": "#/$defs/OtelConfig",
+          "title": "Telemetry",
+          "description": "OpenTelemetry export settings for omni's own logs and traces"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "memory",
+        "auto_sync",
+        "random_agent_names"
+      ]
+    },
+    "OtelConfig": {
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "title": "Endpoint",
+          "description": "OTLP gRPC or HTTP endpoint (e.g. http://localhost:4317)"
+        },
+        "environment": {
+          "type": "string",
+          "title": "Environment",
+          "description": "Deployment environment tag (e.g. dev / staging / prod)"
+        },
+        "log_prompts": {
+          "type": "boolean",
+          "title": "Log Prompts",
+          "description": "Include user prompt text in trace spans"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "title": "Headers",
+          "description": "Additional OTLP export headers (e.g. Authorization: Bearer token)"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Settings": {
+      "properties": {
+        "model": {
+          "type": "string",
+          "title": "Model",
+          "description": "AI model identifier (e.g. claude-sonnet-4-6 / o4-mini / gemini-2.5-pro)"
+        },
+        "timeout": {
+          "type": "number",
+          "title": "Timeout",
+          "description": "Timeout in seconds for individual tool or hook invocations"
+        },
+        "maxTurns": {
+          "type": "number",
+          "title": "Max Turns",
+          "description": "Maximum number of agentic turns allowed per prompt execution"
+        },
+        "sandbox": {
+          "type": "string",
+          "title": "Sandbox",
+          "description": "Sandbox or permission mode for tool execution"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "title": "Environment Variables",
+          "description": "Environment variables passed to the agent or spawned tools"
+        },
+        "hooks": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/HookEntry"
+            },
+            "type": "array"
+          },
+          "type": "object",
+          "title": "Hooks",
+          "description": "Lifecycle hooks mapped by event name to a list of hook commands"
+        },
+        "theme": {
+          "type": "string",
+          "title": "Theme",
+          "description": "UI theme name applied to the agent terminal output"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory used when spawning the agent or tool processes"
+        },
+        "logPrompts": {
+          "type": "boolean",
+          "title": "Log Prompts",
+          "description": "Whether to log user prompts in the agent session output"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    }
+  }
+}

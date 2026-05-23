@@ -145,6 +145,7 @@ type CodeAgent interface {
 	SettingsResolver
 
 	// Create a non-interactive session and return its ID.
+	// Implementor must pass Envs (KEY=VALUE pairs) to the launched process environment.
 	Create(CreateSessionParams) (*CreateSessionResult, error)
 	// Exec runs a prompt to completion and returns the full response.
 	Exec(ExecuteParams) (*ExecuteResult, error)
@@ -154,6 +155,7 @@ type CodeAgent interface {
 	// When PTYClient is set: connector calls PTYClient.Start then PTYClient.Attach
 	// (blocking until terminal detaches). Operator must not call Start/Attach separately.
 	// When PTYClient is nil: blocking /dev/tty mode.
+	// Implementor must pass Envs (KEY=VALUE pairs) to the launched process environment.
 	Resume(ResumeSessionParams) (*ResumeSessionResult, error)
 	// List returns persisted sessions matching the given filter.
 	List(ListSessionsParams) (*ListSessionsResult, error)

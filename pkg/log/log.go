@@ -1,5 +1,11 @@
-// Package log provides a shared logger whose level mirrors omni/log:
-// resolved from OmniConfig.Dev.Debug, with DEV env var as an override.
+// Package log provides a shared structured logger factory used across all
+// memory modules. The log level is resolved at construction time:
+//
+//  1. DEV env var set (any non-empty value) → Debug
+//  2. ~/.config/omni/config.json has dev.debug == true → Debug
+//  3. Otherwise → Info
+//
+// No internal module dependencies — safe to import from any module.
 package log
 
 import (
@@ -9,22 +15,15 @@ import (
 	"path/filepath"
 )
 
-// Logger is the module-wide structured logger for the ptydaemon component.
-var Logger = NewLogger("component", "ptydaemon")
-
 // NewLogger returns a structured logger tagged with the given key/value pair.
-// Matches the omni/log.NewLogger signature so both modules share one convention.
+// Writes to stderr always; also fans out to any OTLP targets registered via InitOtel.
 func NewLogger(key, component string) *slog.Logger {
 	level := resolveLevel()
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: level == slog.LevelDebug,
-	})).With(key, component)
+	opts := &slog.HandlerOptions{Level: level, AddSource: level == slog.LevelDebug}
+	handlers := append([]slog.Handler{slog.NewTextHandler(os.Stderr, opts)}, activeHandlers()...)
+	return slog.New(multiHandler{handlers}).With(key, component)
 }
 
-// resolveLevel checks DEV env var first (used by the systemd unit when DEBUG=1
-// is passed at install time), then falls back to OmniConfig.Dev.Debug so it
-// stays in sync with 'omni config set dev.debug true'.
 func resolveLevel() slog.Level {
 	if os.Getenv("DEV") != "" {
 		return slog.LevelDebug
@@ -35,7 +34,6 @@ func resolveLevel() slog.Level {
 	return slog.LevelInfo
 }
 
-// readOmniDebug reads Dev.Debug from the same config file that omni/log reads.
 func readOmniDebug() (bool, error) {
 	dir, err := xdgConfigHome()
 	if err != nil {

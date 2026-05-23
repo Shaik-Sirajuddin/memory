@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omni.sh/config/hooks/v1/hooks_schema.json",
+  "$ref": "#/$defs/hookPayloads",
+  "$defs": {
+    "PostPromptInput": {
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "title": "Session ID",
+          "description": "Unique identifier for the agent session"
+        },
+        "transcript_path": {
+          "type": "string",
+          "title": "Transcript Path",
+          "description": "Absolute path to the session transcript file"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory of the agent process"
+        },
+        "hook_event_name": {
+          "type": "string",
+          "title": "Hook Event Name",
+          "description": "Name of the hook event that fired"
+        },
+        "prompt": {
+          "type": "string",
+          "title": "Prompt",
+          "description": "Original user prompt"
+        },
+        "response": {
+          "type": "string",
+          "title": "Agent Answer",
+          "description": "Agent's final answer for this turn"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name",
+        "prompt",
+        "response"
+      ]
+    },
+    "PostSessionStartInput": {
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "title": "Session ID",
+          "description": "Unique identifier for the agent session"
+        },
+        "transcript_path": {
+          "type": "string",
+          "title": "Transcript Path",
+          "description": "Absolute path to the session transcript file"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory of the agent process"
+        },
+        "hook_event_name": {
+          "type": "string",
+          "title": "Hook Event Name",
+          "description": "Name of the hook event that fired"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name"
+      ]
+    },
+    "PostToolUseFailureInput": {
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "title": "Session ID",
+          "description": "Unique identifier for the agent session"
+        },
+        "transcript_path": {
+          "type": "string",
+          "title": "Transcript Path",
+          "description": "Absolute path to the session transcript file"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory of the agent process"
+        },
+        "hook_event_name": {
+          "type": "string",
+          "title": "Hook Event Name",
+          "description": "Name of the hook event that fired"
+        },
+        "tool_name": {
+          "type": "string",
+          "title": "Tool Name",
+          "description": "Name of the tool that failed"
+        },
+        "tool_input": {
+          "type": "object",
+          "title": "Tool Input",
+          "description": "Arguments that were passed to the tool"
+        },
+        "tool_use_id": {
+          "type": "string",
+          "title": "Tool Use ID",
+          "description": "Unique identifier for this tool invocation"
+        },
+        "error": {
+          "type": "string",
+          "title": "Error",
+          "description": "Error message returned by the tool"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name",
+        "tool_name",
+        "tool_input",
+        "tool_use_id",
+        "error"
+      ]
+    },
+    "PostToolUseInput": {
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "title": "Session ID",
+          "description": "Unique identifier for the agent session"
+        },
+        "transcript_path": {
+          "type": "string",
+          "title": "Transcript Path",
+          "description": "Absolute path to the session transcript file"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory of the agent process"
+        },
+        "hook_event_name": {
+          "type": "string",
+          "title": "Hook Event Name",
+          "description": "Name of the hook event that fired"
+        },
+        "tool_name": {
+          "type": "string",
+          "title": "Tool Name",
+          "description": "Name of the tool that was called"
+        },
+        "tool_input": {
+          "type": "object",
+          "title": "Tool Input",
+          "description": "Arguments that were passed to the tool"
+        },
+        "tool_use_id": {
+          "type": "string",
+          "title": "Tool Use ID",
+          "description": "Unique identifier for this tool invocation"
+        },
+        "tool_response": {
+          "title": "Tool Response",
+          "description": "Output returned by the tool"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name",
+        "tool_name",
+        "tool_input",
+        "tool_use_id",
+        "tool_response"
+      ]
+    },
+    "PrePromptInput": {
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "title": "Session ID",
+          "description": "Unique identifier for the agent session"
+        },
+        "transcript_path": {
+          "type": "string",
+          "title": "Transcript Path",
+          "description": "Absolute path to the session transcript file"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory of the agent process"
+        },
+        "hook_event_name": {
+          "type": "string",
+          "title": "Hook Event Name",
+          "description": "Name of the hook event that fired"
+        },
+        "prompt": {
+          "type": "string",
+          "title": "Prompt",
+          "description": "Raw user prompt before the agent sees it"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name",
+        "prompt"
+      ]
+    },
+    "PreSessionStartInput": {
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "title": "Session ID",
+          "description": "Unique identifier for the agent session"
+        },
+        "transcript_path": {
+          "type": "string",
+          "title": "Transcript Path",
+          "description": "Absolute path to the session transcript file"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory of the agent process"
+        },
+        "hook_event_name": {
+          "type": "string",
+          "title": "Hook Event Name",
+          "description": "Name of the hook event that fired"
+        },
+        "source": {
+          "type": "string",
+          "title": "Source",
+          "description": "Reason the session is starting — one of: startup | resume | clear | compact"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name",
+        "source"
+      ]
+    },
+    "PreToolUseInput": {
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "title": "Session ID",
+          "description": "Unique identifier for the agent session"
+        },
+        "transcript_path": {
+          "type": "string",
+          "title": "Transcript Path",
+          "description": "Absolute path to the session transcript file"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "Working Directory",
+          "description": "Working directory of the agent process"
+        },
+        "hook_event_name": {
+          "type": "string",
+          "title": "Hook Event Name",
+          "description": "Name of the hook event that fired"
+        },
+        "tool_name": {
+          "type": "string",
+          "title": "Tool Name",
+          "description": "Name of the tool being called"
+        },
+        "tool_input": {
+          "type": "object",
+          "title": "Tool Input",
+          "description": "Arguments passed to the tool"
+        },
+        "tool_use_id": {
+          "type": "string",
+          "title": "Tool Use ID",
+          "description": "Unique identifier for this tool invocation"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "hook_event_name",
+        "tool_name",
+        "tool_input",
+        "tool_use_id"
+      ]
+    },
+    "Response": {
+      "properties": {
+        "continue": {
+          "type": "boolean",
+          "title": "Continue",
+          "description": "Whether the agent should continue; semantics are inverted for Stop (true overrides stop)"
+        },
+        "stop_reason": {
+          "type": "string",
+          "title": "Stop Reason",
+          "description": "Optional reason string passed to the agent when stopping"
+        },
+        "suppress_output": {
+          "type": "boolean",
+          "title": "Suppress Output",
+          "description": "Hide tool result or response from downstream consumers"
+        },
+        "system_message": {
+          "type": "string",
+          "title": "System Message",
+          "description": "Text injected into the agent context alongside the hook response"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "continue",
+        "suppress_output"
+      ]
+    },
+    "hookPayloads": {
+      "properties": {
+        "PreToolUse": {
+          "$ref": "#/$defs/PreToolUseInput"
+        },
+        "PostToolUse": {
+          "$ref": "#/$defs/PostToolUseInput"
+        },
+        "PostToolUseFailure": {
+          "$ref": "#/$defs/PostToolUseFailureInput"
+        },
+        "PreSessionStart": {
+          "$ref": "#/$defs/PreSessionStartInput"
+        },
+        "PostSessionStart": {
+          "$ref": "#/$defs/PostSessionStartInput"
+        },
+        "PrePrompt": {
+          "$ref": "#/$defs/PrePromptInput"
+        },
+        "PostPrompt": {
+          "$ref": "#/$defs/PostPromptInput"
+        },
+        "Response": {
+          "$ref": "#/$defs/Response"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "PreSessionStart",
+        "PostSessionStart",
+        "PrePrompt",
+        "PostPrompt",
+        "Response"
+      ]
+    }
+  }
+}

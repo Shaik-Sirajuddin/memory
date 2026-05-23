@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/Shaik-Sirajuddin/memory/mcp/mcp/runner"
 	hookoperator "github.com/Shaik-Sirajuddin/memory/svc/hook-operator"
 	"github.com/Shaik-Sirajuddin/memory/svc/ptydaemon"
 )
@@ -29,18 +30,25 @@ type HookOperatorConfig struct {
 	BinaryPath string // omni binary used in hook entries; resolved by service if empty
 }
 
-// ServiceMux runs ptydaemon and hook-operator as in-process goroutines under a
-// shared context. Stopping the context is the only shutdown signal needed.
+// AxolinkMCPConfig configures the tunnel MCP service.
+type AxolinkMCPConfig struct {
+	ServiceConfig
+}
+
+// ServiceMux runs ptydaemon, hook-operator, and axolink-mcp as in-process
+// goroutines under a shared context. Stopping the context is the only
+// shutdown signal needed.
 type ServiceMux struct {
 	PTYDaemon    PTYDaemonConfig
 	HookOperator HookOperatorConfig
+	AxolinkMCP   AxolinkMCPConfig
 }
 
 // Run starts all enabled services and blocks until all have exited. The first
 // service error is returned; context cancellation is not treated as an error.
 func (m *ServiceMux) Run(ctx context.Context, log *slog.Logger) error {
 	type result struct{ err error }
-	ch := make(chan result, 2)
+	ch := make(chan result, 3)
 	var wg sync.WaitGroup
 
 	if m.PTYDaemon.Enabled {
@@ -65,6 +73,16 @@ func (m *ServiceMux) Run(ctx context.Context, log *slog.Logger) error {
 			})
 			if err != nil {
 				ch <- result{fmt.Errorf("hook-operator: %w", err)}
+			}
+		}()
+	}
+
+	if m.AxolinkMCP.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := runner.Run(ctx, runner.DefaultConfig()); err != nil {
+				ch <- result{fmt.Errorf("axolink-mcp: %w", err)}
 			}
 		}()
 	}
