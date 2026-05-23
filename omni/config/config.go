@@ -14,6 +14,7 @@ type Features struct {
 // OmniConfig is the root configuration for omni.
 type OmniConfig struct {
 	*Features
-	Agent *Settings  `json:"agent,omitempty" jsonschema:"title=Agent Settings,description=Common settings applied to the code agent"`
-	Dev   *Developer `json:"dev,omitempty"   jsonschema:"title=Developer,description=Developer and debug flags"`
+	Agent *Settings   `json:"agent,omitempty" jsonschema:"title=Agent Settings,description=Common settings applied to the code agent"`
+	Dev   *Developer  `json:"dev,omitempty"   jsonschema:"title=Developer,description=Developer and debug flags"`
+	Otel  *OtelConfig `json:"otel,omitempty"  jsonschema:"title=Telemetry,description=OpenTelemetry export settings for omni's own logs and traces"`
 }

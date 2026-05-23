@@ -72,6 +72,11 @@
           "$ref": "#/$defs/Developer",
           "title": "Developer",
           "description": "Developer and debug flags"
+        },
+        "otel": {
+          "$ref": "#/$defs/OtelConfig",
+          "title": "Telemetry",
+          "description": "OpenTelemetry export settings for omni's own logs and traces"
         }
       },
       "additionalProperties": false,
@@ -81,6 +86,35 @@
         "auto_sync",
         "random_agent_names"
       ]
+    },
+    "OtelConfig": {
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "title": "Endpoint",
+          "description": "OTLP gRPC or HTTP endpoint (e.g. http://localhost:4317)"
+        },
+        "environment": {
+          "type": "string",
+          "title": "Environment",
+          "description": "Deployment environment tag (e.g. dev / staging / prod)"
+        },
+        "log_prompts": {
+          "type": "boolean",
+          "title": "Log Prompts",
+          "description": "Include user prompt text in trace spans"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "title": "Headers",
+          "description": "Additional OTLP export headers (e.g. Authorization: Bearer token)"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
     },
     "Settings": {
       "properties": {
