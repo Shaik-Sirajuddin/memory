@@ -181,7 +181,7 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 			count, err := meta.MetaAttached(resumeID)
 			if err != nil {
 				logger.Warn("Resume: PTY attached count unavailable", "sessionID", resumeID, "err", err)
-			} else if count > 1 {
+			} else if count >= 1 {
 				return nil, errors.New("claude: resume: PTY session already has an interactive user attached")
 			}
 		}
