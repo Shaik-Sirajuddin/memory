@@ -83,7 +83,7 @@ func TestRegisterAgentAppliesDefaultAndConfiguredHooks(t *testing.T) {
 	resolver := &fakeResolver{cfg: &config.OmniConfig{
 		Agent: &config.Settings{
 			Hooks: map[string][]config.HookEntry{
-				"pre_tool_use": {{Command: &customCmd}},
+				"PreToolUse": {{Command: &customCmd}},
 			},
 		},
 	}}
@@ -100,14 +100,14 @@ func TestRegisterAgentAppliesDefaultAndConfiguredHooks(t *testing.T) {
 		t.Fatalf("RegisterAgent() error = %v", err)
 	}
 
-	if _, ok := transformer.hooks["omni.pre_tool_use"]; !ok {
+	if _, ok := transformer.hooks["omni.PreToolUse"]; !ok {
 		t.Fatalf("missing default hook")
 	}
-	if _, ok := transformer.hooks["omni.config.pre_tool_use.0"]; !ok {
+	if _, ok := transformer.hooks["omni.config.PreToolUse.0"]; !ok {
 		t.Fatalf("missing configured hook")
 	}
-	assertStringSlice(t, transformer.hooks["omni.pre_tool_use"].Args, []string{"hook", "--event", "pre_tool_use", "--agent", "agent-1"})
-	assertStringSlice(t, transformer.hooks["omni.config.pre_tool_use.0"].Args, []string{"--event", "pre_tool_use"})
+	assertStringSlice(t, transformer.hooks["omni.PreToolUse"].Args, []string{"hook", "--event", "PreToolUse", "--agent", "agent-1"})
+	assertStringSlice(t, transformer.hooks["omni.config.PreToolUse.0"].Args, []string{"--event", "PreToolUse"})
 }
 
 func TestStartRegistersActiveAgentsAndWatches(t *testing.T) {
