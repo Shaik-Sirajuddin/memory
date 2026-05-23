@@ -47,7 +47,8 @@ download_and_install() {
   local url="https://github.com/${REPO}/releases/download/${tag}/${tarball}"
   local tmp_dir
   tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  # double-quotes expand $tmp_dir now so it isn't unbound when EXIT trap fires
+  trap "rm -rf '$tmp_dir'" EXIT
 
   echo "==> downloading $tarball"
   curl -fsSL "$url" -o "$tmp_dir/$tarball"
@@ -55,9 +56,9 @@ download_and_install() {
   echo "==> extracting"
   tar -xzf "$tmp_dir/$tarball" -C "$tmp_dir"
 
-  local pkg_dir="$tmp_dir/omni-${ver}-${os}-${arch}"
+  # goreleaser archives are flat (no wrapping subdir); setup.sh is at deployment/setup.sh
   echo "==> running setup"
-  sudo bash "$pkg_dir/setup.sh"
+  sudo BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
 }
 
 # ── Upgrade detection ─────────────────────────────────────────────────────────
