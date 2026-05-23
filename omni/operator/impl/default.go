@@ -39,7 +39,7 @@ const (
 	providerGemini codeagent.Provider = "gemini"
 
 	mcpAuthToken  = "tunnel-mcp-dev-token"
-	mcpSenderType = "mcp"
+	mcpSenderType = "omni_agent"
 )
 
 // DefaultOperator implements [Operator].
@@ -1056,12 +1056,12 @@ func mcpSessionEnvs(agent *omniagent.AgentInfo) []string {
 	workspace := strings.TrimSpace(string(agent.WorkspaceDir))
 	senderID := strings.TrimSpace(agent.Name)
 	envs := []string{
-		"MCP_AUTH_TOKEN=" + mcpAuthToken,
-		"MCP_SENDER_ID=" + senderID,
-		"MCP_SENDER_TYPE=" + mcpSenderType,
-		"MCP_AGENT_WORKSPACE=" + workspace,
+		"AXO_LINK_MCP_AUTH_TOKEN=" + mcpAuthToken,
+		"AXO_LINK_MCP_SENDER_ID=" + senderID,
+		"AXO_LINK_MCP_SENDER_TYPE=" + mcpSenderType,
+		"AXO_LINK_MCP_AGENT_WORKSPACE=" + workspace,
 	}
-	logger.Debug("mcpSessionEnvs: built session envs", "agentID", agent.ID, "senderID", senderID, "workspace", workspace, "envKeys", []string{"MCP_AUTH_TOKEN", "MCP_SENDER_ID", "MCP_SENDER_TYPE", "MCP_AGENT_WORKSPACE"})
+	logger.Debug("mcpSessionEnvs: built session envs", "agentID", agent.ID, "senderID", senderID, "workspace", workspace, "envKeys", []string{"AXO_LINK_MCP_AUTH_TOKEN", "AXO_LINK_MCP_SENDER_ID", "AXO_LINK_MCP_SENDER_TYPE", "AXO_LINK_MCP_AGENT_WORKSPACE"})
 	return envs
 }
 
