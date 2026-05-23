@@ -68,8 +68,20 @@ write_mcp_dropin
 seed_mcp_configs() {
   local url="http://127.0.0.1:18062/mcp"
 
-  # claude — settings.json with omni hooks (suppresses first-run security notice)
-  if [[ ! -f /root/.claude/settings.json ]]; then
+  # claude — settings.json with omni hooks
+  # Rewrite if absent OR if stale top-level hook keys (PreSessionStart/PostSessionStart) are present
+  local needs_seed=0
+  [[ ! -f /root/.claude/settings.json ]] && needs_seed=1
+  if [[ $needs_seed -eq 0 ]] && python3 -c "
+import json,sys
+d=json.load(open('/root/.claude/settings.json'))
+stale={'PreSessionStart','PostSessionStart'}
+sys.exit(0 if stale & set(d.get('hooks',{})) else 1)
+" 2>/dev/null; then
+    echo "==> rewriting /root/.claude/settings.json (stale hook keys detected)"
+    needs_seed=1
+  fi
+  if [[ $needs_seed -eq 1 ]]; then
     echo "==> seeding /root/.claude/settings.json"
     mkdir -p /root/.claude
     cat > /root/.claude/settings.json <<'EOF'
@@ -93,9 +105,13 @@ seed_mcp_configs() {
 EOF
   fi
 
-  # claude — /root/.claude.json (MCP config, inside agent-claude volume)
+  # claude — /root/.claude.json (MCP config + onboarding bypass, inside agent-claude volume)
   if [[ ! -f /root/.claude.json ]]; then
     echo "==> seeding /root/.claude.json"
+    local api_key_suffix=""
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+      api_key_suffix="${ANTHROPIC_API_KEY: -20}"
+    fi
     cat > /root/.claude.json <<EOF
 {
   "mcpServers": {
@@ -109,9 +125,24 @@ EOF
         "X-Agent-Workspace": "\${AXO_LINK_MCP_AGENT_WORKSPACE}"
       }
     }
-  }
+  },
+  "customApiKeyResponses": {
+    "approved": ["${api_key_suffix}"],
+    "rejected": []
+  },
+  "hasCompletedOnboarding": true,
+  "hasTrustDialogHooksAccepted": true,
+  "shiftEnterKeyBindingInstalled": true,
+  "theme": "dark"
 }
 EOF
+  fi
+
+  # claude — accept workspace trust + project onboarding for /build (write-once)
+  if [[ -f /usr/bin/claude ]] && ! claude config get hasTrustDialogAccepted 2>/dev/null | grep -q true; then
+    echo "==> accepting claude workspace trust for /build"
+    cd /build && claude config set hasTrustDialogAccepted true 2>/dev/null || true
+    cd /build && claude config set hasCompletedProjectOnboarding true 2>/dev/null || true
   fi
 
   # codex — /root/.codex/config.toml (inside agent-codex volume)
