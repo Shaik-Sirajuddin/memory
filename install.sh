@@ -37,12 +37,14 @@ latest_version() {
 
 # ── Download + extract ────────────────────────────────────────────────────────
 download_and_install() {
-  local version="$1" os_arch="$2"
+  local tag="$1" os_arch="$2"
   local os arch
   IFS='/' read -r os arch <<< "$os_arch"
 
-  local tarball="omni-${version}-${os}-${arch}.tar.gz"
-  local url="https://github.com/${REPO}/releases/download/${version}/${tarball}"
+  # goreleaser uses {{ .Version }} (no leading v) in filenames, but {{ .Tag }} in the URL path
+  local ver="${tag#v}"
+  local tarball="omni-${ver}-${os}-${arch}.tar.gz"
+  local url="https://github.com/${REPO}/releases/download/${tag}/${tarball}"
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT
@@ -53,7 +55,7 @@ download_and_install() {
   echo "==> extracting"
   tar -xzf "$tmp_dir/$tarball" -C "$tmp_dir"
 
-  local pkg_dir="$tmp_dir/omni-${version}-${os}-${arch}"
+  local pkg_dir="$tmp_dir/omni-${ver}-${os}-${arch}"
   echo "==> running setup"
   sudo bash "$pkg_dir/setup.sh"
 }
@@ -75,7 +77,9 @@ main() {
   fi
 
   current="$(current_version)"
-  if [[ -n "$current" && "$current" == "$version" ]]; then
+  local version_bare="${version#v}"
+  local current_bare="${current#v}"
+  if [[ -n "$current" && "$current_bare" == "$version_bare" ]]; then
     echo "==> omni $version is already installed and up to date"
     exit 0
   elif [[ -n "$current" ]]; then
