@@ -321,7 +321,7 @@
         "continue": {
           "type": "boolean",
           "title": "Continue",
-          "description": "Whether the agent should continue; semantics are inverted for post_prompt (true overrides stop)"
+          "description": "Whether the agent should continue; semantics are inverted for Stop (true overrides stop)"
         },
         "stop_reason": {
           "type": "string",

@@ -32,7 +32,7 @@ type EventBase struct {
 
 // Response is the canonical fields shared by every hook response.
 type Response struct {
-	Continue       bool    `json:"continue"                  jsonschema:"title=Continue,description=Whether the agent should continue; semantics are inverted for post_prompt (true overrides stop)"`
+	Continue       bool    `json:"continue"                  jsonschema:"title=Continue,description=Whether the agent should continue; semantics are inverted for Stop (true overrides stop)"`
 	StopReason     *string `json:"stop_reason,omitempty"     jsonschema:"title=Stop Reason,description=Optional reason string passed to the agent when stopping"`
 	SuppressOutput bool    `json:"suppress_output"           jsonschema:"title=Suppress Output,description=Hide tool result or response from downstream consumers"`
 	SystemMessage  *string `json:"system_message,omitempty"  jsonschema:"title=System Message,description=Text injected into the agent context alongside the hook response"`
