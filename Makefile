@@ -1,7 +1,12 @@
 COMPOSE_FILE := development/docker-compose.yaml
 VERSION      ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo "dev")
 
-.PHONY: build install uninstall release snapshot docker-build docker-up docker-down docker-rebuild docker-relaunch docker-connect dev-preflight
+.PHONY: build install uninstall release snapshot gen docker-build docker-up docker-down docker-rebuild docker-relaunch docker-connect dev-preflight
+
+# ── codegen ───────────────────────────────────────────────────────────────────
+
+gen:
+	$(MAKE) -C omni gen
 
 # ── release ───────────────────────────────────────────────────────────────────
 

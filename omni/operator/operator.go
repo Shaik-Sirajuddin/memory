@@ -66,6 +66,28 @@ type TeamInitParams struct {
 	// RepoURL is optional. When set the memory dir is tracked as a git submodule.
 	// When empty an empty git repository is initialised inside the memory dir.
 	RepoURL string `json:"repo_url,omitempty"`
+	// Layout is an optional path to a provision YAML file. When set all agents
+	// defined in the layout are created (non-interactive) as part of team-init.
+	Layout string `json:"layout,omitempty"`
+	// TerminalLayout is an optional path to a terminal layout file (e.g. KDL for
+	// zellij). Requires Terminal to be set.
+	TerminalLayout string `json:"terminal_layout,omitempty"`
+	// Terminal is the name of the terminal multiplexer to use (e.g. "zellij").
+	// When set together with TerminalLayout a terminal session is started after
+	// all agents have been initialised.
+	Terminal string `json:"terminal,omitempty"`
+}
+
+// TerminalStatus reports the installation state of a single terminal provider.
+type TerminalStatus struct {
+	Name      string `json:"name"`
+	Installed bool   `json:"installed"`
+	Error     string `json:"error,omitempty"`
+}
+
+// DoctorTerminalsResult holds the health check results for all registered terminal providers.
+type DoctorTerminalsResult struct {
+	Terminals []TerminalStatus `json:"terminals"`
 }
 
 type UpgradeAgentParams struct {
@@ -203,4 +225,13 @@ type Operator interface {
 
 	ExecInSession(ExecInSessionParams) (*ExecInSessionResult, error)
 	Pipe(PipeParams) error
+
+	// ListTemplates returns the short-names of available provision file templates.
+	ListTemplates() ([]string, error)
+
+	// DoctorTerminals checks whether each registered terminal provider is installed.
+	DoctorTerminals() (*DoctorTerminalsResult, error)
+
+	// InstallTerminal runs the install routine for the named terminal provider.
+	InstallTerminal(name string) error
 }
