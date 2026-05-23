@@ -518,6 +518,12 @@ func (o *DefaultOperator) ResumeAgent(params operator.ResumeAgentParams) error {
 		} else {
 			logger.Debug("ResumeAgent: pty daemon active session check skipped", "agentID", agent.ID, "sessionID", sessionID, "err", err)
 		}
+		if mac, ok := o.ptyDaemon.(interface{ MetaAttached(string) (int, error) }); ok {
+			if count, err := mac.MetaAttached(sessionID); err == nil && count >= 1 {
+				logger.Info("ResumeAgent: session already attached, skipping resume", "component", "operator", "agentID", agent.ID, "sessionID", sessionID, "attachedCount", count)
+				return nil
+			}
+		}
 	}
 	ca, err := o.createCodeAgent(agent, provider, string(agent.WorkspaceDir), model)
 	if err != nil {
