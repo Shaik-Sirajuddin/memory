@@ -7,30 +7,20 @@ Run `omni` + `omni-server` inside an Ubuntu+systemd container, built from your l
 - Docker + Docker Compose v2
 - The project checked out locally
 
-## Start
+## First-Time Setup
 
 ```bash
-cd <repo-root>
-docker compose -f development/docker-compose.yaml up --build
+make dev-preflight
 ```
 
-On first start the container will:
-1. Install agent CLIs (`claude`, `codex`, `gemini`) via npm
-2. Build `omni` and `omni-server` from mounted source
-3. Install binaries + write the systemd unit
-4. Hand off to systemd — `omni@root.service` starts automatically
+This creates:
+- `development/.env.docker` — copy of the example, fill in your API keys
+- `development/local/` — agent MCP configs (`.claude.json`, `.codex/`, `.gemini/`)
 
-## Agent API Keys
-
-Copy the example env file and fill in your keys:
-
-```bash
-cp development/.env.docker.example development/.env.docker
-# edit development/.env.docker with your keys
-```
+Then edit `development/.env.docker` with your keys:
 
 | Variable | Agent | Purpose |
-|----------|-------|---------|
+|---|---|---|
 | `ANTHROPIC_API_KEY` | claude | API key |
 | `OPENAI_API_KEY` | codex | API key |
 | `GEMINI_API_KEY` | gemini | API key |
@@ -38,44 +28,46 @@ cp development/.env.docker.example development/.env.docker
 | `CODEX_MODEL` | codex | Default model (e.g. `codex-mini-latest`) |
 | `GEMINI_MODEL` | gemini | Default model (e.g. `gemini-2.5-pro`) |
 
-The container reads `.env.docker` on startup — no interactive login required.
-
-## Subsequent Starts
+## Start
 
 ```bash
-docker compose -f development/docker-compose.yaml up
+make docker-up
 ```
 
-Source is live-mounted — rebuild inside the container to pick up changes:
+On first start the container will:
+1. Install binaries from the pre-built image
+2. Write the systemd unit
+3. Hand off to systemd — `omni@root.service` starts automatically
+
+## Connect
 
 ```bash
-docker compose -f development/docker-compose.yaml exec ubuntu bash /workspace/development/build.sh
-systemctl restart omni@root
+make docker-connect
 ```
 
-Or restart the whole container:
+Opens an interactive login shell inside the container.
+
+## Rebuild Image
+
+Required when Go source or Dockerfile changes:
 
 ```bash
-docker compose -f development/docker-compose.yaml restart
+make docker-rebuild
 ```
+
+Agent configs and DB persist across rebuilds — they are bind-mounted from `development/local/` and named volumes.
 
 ## Health Checks
 
-Verify all three services are up after start or rebuild:
-
-**Unix socket (tunnel-mcp — default transport):**
 ```bash
-curl -s --unix-socket /run/omni-${USER}/mcp.sock http://unix/healthz
-# → {"status":"ok","service":"tunnel-mcp","version":"..."}
-```
+# MCP streamable HTTP (agent clients)
+curl -s http://127.0.0.1:18062/mcp
 
-**TCP (tunnel-mcp — only when `AXO_LINK_MCP_TRANSPORT=http` or `streamable_http`):**
-```bash
-curl -s http://127.0.0.1:18061/healthz
-```
+# Pure HTTP service (unix socket)
+docker compose -f development/docker-compose.yaml exec ubuntu \
+  curl -s --unix-socket /run/omni-root/service.sock http://unix/healthz
 
-**systemd service status:**
-```bash
+# systemd service status
 docker compose -f development/docker-compose.yaml exec ubuntu \
   systemctl status omni@root --no-pager
 ```
@@ -83,34 +75,38 @@ docker compose -f development/docker-compose.yaml exec ubuntu \
 ## Service Logs
 
 ```bash
+# all logs
+docker compose -f development/docker-compose.yaml exec ubuntu journalctl -fu omni@root
+
+# omni only (exclude tunnel_mcp)
 docker compose -f development/docker-compose.yaml exec ubuntu \
-  journalctl -u omni@root -f
+  journalctl -fu omni@root | grep -v 'source=/build/tunnel_mcp'
+
+# tunnel_mcp only
+docker compose -f development/docker-compose.yaml exec ubuntu \
+  journalctl -fu omni@root | grep 'source=/build/tunnel_mcp'
 ```
 
-## Environment Overrides
+## Volumes and Persistence
 
-Create `development/.env.docker` to override defaults:
+| Source | Container path | Purpose |
+|---|---|---|
+| `omni-persist` (volume) | `/var/lib/omni-root` | ptydaemon DB, state |
+| `omni-auth` (volume) | `/root/.config` | agent CLI auth tokens, omni config |
+| `omni-data` (volume) | `/root/.local/share/memory` | agent DB, sandbox data |
+| `development/local/.claude.json` | `/root/.claude.json` | claude MCP config |
+| `development/local/.codex/` | `/root/.codex/` | codex MCP config |
+| `development/local/.gemini/` | `/root/.gemini/` | gemini MCP config |
 
-```bash
-DEBUG=1          # enables slog debug logging (DEV=1 inside the service)
-VERSION=dev      # override build version string
-```
-
-## Volumes
-
-| Volume | Mount | Purpose |
-|--------|-------|---------|
-| `omni-persist` | `/var/lib/omni-root` | ptydaemon DB, state |
-| `omni-auth` | `/root/.config` | agent CLI auth tokens |
-
-To reset auth (force re-login):
+All data survives `make docker-down docker-up`. To fully reset:
 
 ```bash
-docker volume rm cli_omni-auth
+docker compose -f development/docker-compose.yaml down -v   # removes named volumes
+rm -rf development/local && make dev-preflight               # resets agent configs
 ```
 
 ## Stop
 
 ```bash
-docker compose -f development/docker-compose.yaml down
+make docker-down
 ```
