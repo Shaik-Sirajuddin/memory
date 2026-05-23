@@ -28,13 +28,13 @@ func DefaultHooks(binaryPath string) []DefaultHook {
 	}
 
 	return []DefaultHook{
-		{Name: "hookop.pre_tool_use", Event: hooks.PreToolUse, Entry: entry(hooks.PreToolUse)},
-		{Name: "hookop.post_tool_use", Event: hooks.PostToolUse, Entry: entry(hooks.PostToolUse)},
-		{Name: "hookop.post_tool_use_failure", Event: hooks.PostToolUseFailure, Entry: entry(hooks.PostToolUseFailure)},
-		{Name: "hookop.pre_session_start", Event: hooks.PreSessionStart, Entry: entry(hooks.PreSessionStart)},
-		{Name: "hookop.post_session_start", Event: hooks.PostSessionStart, Entry: entry(hooks.PostSessionStart)},
-		{Name: "hookop.pre_prompt", Event: hooks.PrePrompt, Entry: entry(hooks.PrePrompt)},
-		{Name: "hookop.post_prompt", Event: hooks.PostPrompt, Entry: entry(hooks.PostPrompt)},
+		{Name: "hookop.PreToolUse", Event: hooks.PreToolUse, Entry: entry(hooks.PreToolUse)},
+		{Name: "hookop.PostToolUse", Event: hooks.PostToolUse, Entry: entry(hooks.PostToolUse)},
+		{Name: "hookop.PostToolUseFailure", Event: hooks.PostToolUseFailure, Entry: entry(hooks.PostToolUseFailure)},
+		{Name: "hookop.PreSessionStart", Event: hooks.PreSessionStart, Entry: entry(hooks.PreSessionStart)},
+		{Name: "hookop.PostSessionStart", Event: hooks.PostSessionStart, Entry: entry(hooks.PostSessionStart)},
+		{Name: "hookop.UserPromptSubmit", Event: hooks.PrePrompt, Entry: entry(hooks.PrePrompt)},
+		{Name: "hookop.Stop", Event: hooks.PostPrompt, Entry: entry(hooks.PostPrompt)},
 	}
 }
 

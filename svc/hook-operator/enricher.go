@@ -3,8 +3,8 @@ package hookoperator
 import (
 	"encoding/json"
 
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
-	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 )
 
 // SessionLookup resolves a code session by its own ID (not agent ID).
@@ -17,20 +17,6 @@ type SessionLookup interface {
 // operator.OperatorStore satisfies this interface.
 type AgentLookup interface {
 	GetAgent(id string) (*omniagent.AgentInfo, error)
-}
-
-// OmniAgent is the agent context injected into every hook payload.
-type OmniAgent struct {
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Model  string `json:"model,omitempty"`
-	Status string `json:"status,omitempty"`
-}
-
-// OmniContext is the top-level omni field added to every hook payload.
-type OmniContext struct {
-	Agent     OmniAgent            `json:"agent"`
-	Workspace sandbox.WorkspaceDir `json:"workspace,omitempty"`
 }
 
 type enricher struct {
@@ -67,8 +53,8 @@ func (e *enricher) enrich(body []byte) []byte {
 	return enriched
 }
 
-func (e *enricher) buildContext(raw map[string]json.RawMessage) OmniContext {
-	ctx := OmniContext{}
+func (e *enricher) buildContext(raw map[string]json.RawMessage) hooks.OmniContext {
+	ctx := hooks.OmniContext{}
 
 	// Extract session_id from the raw payload JSON.
 	var sessionID string

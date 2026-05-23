@@ -117,7 +117,7 @@ func (e *executor) runHTTP(ctx context.Context, payload HookPayload, rawURL stri
 
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Error("hook: http request failed", "err", err, "event", payload.EventName, "url", rawURL)
+		logger.Warn("hook: http request failed (safe-skipped)", "err", err, "event", payload.EventName, "url", rawURL)
 		return hookRunResult{err: fmt.Errorf("hook-operator: http %q: %w", rawURL, err)}
 	}
 	defer resp.Body.Close()
@@ -126,6 +126,11 @@ func (e *executor) runHTTP(ctx context.Context, payload HookPayload, rawURL stri
 	if err != nil {
 		logger.Error("hook: read http response failed", "err", err, "url", rawURL)
 		return hookRunResult{err: fmt.Errorf("hook-operator: read response from %q: %w", rawURL, err)}
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warn("hook: http non-2xx response (safe-skipped)", "status", resp.StatusCode, "url", rawURL, "event", payload.EventName)
+		return hookRunResult{err: fmt.Errorf("hook-operator: http %q returned %d", rawURL, resp.StatusCode)}
 	}
 
 	var hookResp hookResponse

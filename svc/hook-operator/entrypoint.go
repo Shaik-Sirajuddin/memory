@@ -42,15 +42,16 @@ func (ep *entryPoint) Hook(payload HookPayload) (Result, error) {
 //   - Any continue=false blocks; the first stop_reason encountered wins.
 //   - All system_messages are joined with a newline.
 //   - SuppressOutput is true when any hook sets it to true.
-//   - Errored hooks are treated as continue=true and do not block.
+//   - Errored hooks are safe-skipped; delivery continues with remaining results.
 func aggregate(results []hookRunResult) Result {
 	out := Result{Continue: true}
 
 	var sysMessages []string
+	var skipped int
 
 	for _, r := range results {
 		if r.err != nil {
-			// Treat errors as non-blocking; callers may log separately.
+			skipped++
 			continue
 		}
 
@@ -71,6 +72,10 @@ func aggregate(results []hookRunResult) Result {
 	if len(sysMessages) > 0 {
 		merged := strings.Join(sysMessages, "\n")
 		out.SystemMessage = &merged
+	}
+
+	if skipped > 0 {
+		logger.Warn("hook: some entries failed, delivery continued with partial results", "skipped", skipped, "total", len(results))
 	}
 
 	return out
