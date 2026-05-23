@@ -1,0 +1,1 @@
+send message to test-claude-2 ask `whats the time` in execute mode use /mcp tunnel_mcp
