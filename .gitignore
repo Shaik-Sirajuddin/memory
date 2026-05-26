@@ -2,9 +2,11 @@
 .claude
 .codex
 .gemini
+.antigravitycli
 agent[-_]*.md
+.agents
 development/.env.docker
 .goreleaser.yaml
-memory/
 play/
 website/
+dist/
