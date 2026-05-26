@@ -14,6 +14,8 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/config"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/agy"
+	agysettings "github.com/Shaik-Sirajuddin/memory/connector/codeagent/agy/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude"
 	claudesettings "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex"
@@ -37,6 +39,7 @@ const (
 	providerClaude codeagent.Provider = "claude"
 	providerCodex  codeagent.Provider = "codex"
 	providerGemini codeagent.Provider = "gemini"
+	providerAgy    codeagent.Provider = "agy"
 
 	mcpAuthToken  = "tunnel-mcp-dev-token"
 	mcpSenderType = "omni_agent"
@@ -654,6 +657,8 @@ func New() (operator.Operator, error) {
 				return codex.New(workDir, model, nil)
 			case providerGemini:
 				return gemini.New(workDir, model, nil)
+			case providerAgy:
+				return agy.New(workDir, model, nil)
 			default:
 				return nil, fmt.Errorf("operator: unknown provider %q", provider)
 			}
@@ -666,6 +671,8 @@ func New() (operator.Operator, error) {
 				return codex.New(workDir, model, &codexPTYAdapter{agentID: agentID, workDir: workDir, inner: ptyDaemon})
 			case providerGemini:
 				return gemini.New(workDir, model, &codexPTYAdapter{agentID: agentID, workDir: workDir, inner: ptyDaemon})
+			case providerAgy:
+				return agy.New(workDir, model, &codexPTYAdapter{agentID: agentID, workDir: workDir, inner: ptyDaemon})
 			default:
 				return nil, fmt.Errorf("operator: unknown provider %q", provider)
 			}
@@ -693,6 +700,7 @@ func (o *DefaultOperator) DisoverCodeAgents() (*operator.DisocveryResult, error)
 	}{
 		{providerClaude, "claude"},
 		{providerCodex, "codex"},
+		{providerAgy, "agy"},
 		// {providerGemini, "gemini"}, // temporarily disabled
 	}
 
@@ -705,13 +713,20 @@ func (o *DefaultOperator) DisoverCodeAgents() (*operator.DisocveryResult, error)
 		if _, err := exec.LookPath(c.binary); err != nil {
 			continue
 		}
-		providers = append(providers, c.provider)
 		logger.Debug("DisoverCodeAgents: provider available", "provider", c.provider, "binary", c.binary)
 
 		// Attempt model discovery via the codeagent interface.
 		if o.newCodeAgent != nil {
 			ca, caErr := o.newCodeAgent(c.provider, cwd, "")
 			if caErr == nil {
+				// Auth check: skip providers that are not authenticated.
+				identity := ca.GetUserIdentity()
+				if !identity.Authenticated {
+					logger.Info("DisoverCodeAgents: provider not authenticated, skipping", "provider", c.provider)
+					continue
+				}
+
+				providers = append(providers, c.provider)
 				if result, discErr := ca.Discover(); discErr == nil {
 					models := make([]string, len(result.Models))
 					for i, m := range result.Models {
@@ -726,7 +741,9 @@ func (o *DefaultOperator) DisoverCodeAgents() (*operator.DisocveryResult, error)
 				}
 			}
 			logger.Debug("DisoverCodeAgents: model discovery unavailable, skipping", "provider", c.provider)
+			continue
 		}
+		providers = append(providers, c.provider)
 	}
 
 	logger.Info("DisoverCodeAgents: completed", "providers", providers, "modelEntries", len(providerModels))
@@ -1220,6 +1237,8 @@ func (o *DefaultOperator) GetCodeAgentResolver(agent codeagent.Provider) (*codea
 		r = claudesettings.New(providerClaude)
 	case providerCodex:
 		r = codexsettings.New(providerCodex)
+	case providerAgy:
+		r = agysettings.New(providerAgy)
 	case providerGemini:
 		logger.Error("GetCodeAgentResolver: resolver unavailable", "provider", providerGemini)
 		return nil, fmt.Errorf("operator: %w: %s", operator.ErrResolverUnavailable, providerGemini)

@@ -6,6 +6,7 @@ require (
 	github.com/Shaik-Sirajuddin/memory v1.1.0
 	github.com/Shaik-Sirajuddin/memory/mcp v0.0.0-00010101000000-000000000000
 	github.com/Shaik-Sirajuddin/memory/pkg/log v0.0.0
+	github.com/Shaik-Sirajuddin/memory/svc/config_sync v0.0.0
 	github.com/Shaik-Sirajuddin/memory/svc/hook-operator v0.0.0
 	github.com/Shaik-Sirajuddin/memory/svc/ptydaemon v0.0.0
 )
@@ -63,6 +64,7 @@ replace (
 	github.com/Shaik-Sirajuddin/memory => ../../omni
 	github.com/Shaik-Sirajuddin/memory/mcp => ../../tunnel_mcp
 	github.com/Shaik-Sirajuddin/memory/pkg/log => ../../pkg/log
+	github.com/Shaik-Sirajuddin/memory/svc/config_sync => ../config_sync
 	github.com/Shaik-Sirajuddin/memory/svc/hook-operator => ../hook-operator
 	github.com/Shaik-Sirajuddin/memory/svc/ptydaemon => ../ptydaemon
 )

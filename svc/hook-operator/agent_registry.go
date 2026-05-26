@@ -1,9 +1,11 @@
 package hookoperator
 
 import (
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
+	agy "github.com/Shaik-Sirajuddin/memory/connector/codeagent/agy"
+	agyhooks "github.com/Shaik-Sirajuddin/memory/connector/codeagent/agy/hooks"
 	claude "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude"
 	claudehooks "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/hooks"
-	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 )
 
 // agentRegistry owns one HookTransformer per provider, initialized at startup.
@@ -27,6 +29,7 @@ func newAgentRegistry(reg *registrar) *agentRegistry {
 func (ar *agentRegistry) init() {
 	providers := map[codeagent.Provider]codeagent.HookTransformer{
 		claude.Claude: claudehooks.New(),
+		agy.Agy:       agyhooks.New(),
 	}
 	for provider, transformer := range providers {
 		_ = ar.reg.apply(transformer)
