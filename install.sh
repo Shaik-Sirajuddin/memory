@@ -58,7 +58,14 @@ download_and_install() {
 
   # goreleaser archives are flat (no wrapping subdir); setup.sh is at deployment/setup.sh
   echo "==> running setup"
-  sudo BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
+  if [[ "$EUID" -eq 0 ]]; then
+    BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
+  elif sudo -n true 2>/dev/null; then
+    sudo BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
+  else
+    echo "    no sudo access — installing for current user under ~/.local"
+    OMNI_USER_INSTALL=1 BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
+  fi
 }
 
 # ── Upgrade detection ─────────────────────────────────────────────────────────
