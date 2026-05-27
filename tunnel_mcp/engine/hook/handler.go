@@ -63,7 +63,7 @@ func (h *HookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("hook received", "event", eventName, "session_id", base.SessionID, "agent_id", agentID)
 
 	switch eventName {
-	case hooks.PreSessionStart:
+	case hooks.SessionStart:
 		h.eng.OnPreSessionStart(agentID, agentName, base.SessionID, base.Cwd)
 
 	case hooks.PreToolUse:
