@@ -441,7 +441,8 @@ func (a *claudeAgent) Stream(p codeagent.StreamParams) (*codeagent.StreamResult,
 // buildExecPayload constructs the bracketed-paste sequence used by ExecInSession
 // to inject a prompt into a live PTY without triggering mid-paste interpretation.
 func buildExecPayload(prompt string) []byte {
-	return []byte(ctrlU + pasteStart + prompt + pasteEnd + submitKey)
+	// \r after submitKey ensures submission even if CSI-u mode isn't active yet (timing race).
+	return []byte(ctrlU + pasteStart + prompt + pasteEnd + submitKey + "\r")
 }
 
 // ============================================================
