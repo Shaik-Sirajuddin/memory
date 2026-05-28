@@ -30,7 +30,7 @@ const statusQueued = message.Status("queued")
 // ReplyService manages the full reply lifecycle for a delivered message.
 // The concrete implementation lives in the server layer and is wired via SetReplyService.
 type ReplyService interface {
-	SendReply(ctx context.Context, msg *message.Message, fromAgentID string) error
+	SendReply(ctx context.Context, msg *message.Message, fromAgentID, fromAgentName string) error
 }
 
 // AgentWorkspace exposes the engine's current workspace for a sender agent.
@@ -662,7 +662,8 @@ func (e *ProcessingEngine) routeReply(msg *message.Message, req AgentCallbackReq
 		logger.Warn("route reply: no reply service, reply dropped", "message_id", msg.ID)
 		return
 	}
-	if err := e.reply.SendReply(e.ctx, msg, req.AgentID); err != nil {
+	agentState, _ := e.state.GetAgent(req.AgentID)
+	if err := e.reply.SendReply(e.ctx, msg, req.AgentID, agentState.Agent.Name); err != nil {
 		logger.Error("route reply: send reply failed", "message_id", msg.ID, "err", err)
 	}
 }
@@ -812,7 +813,7 @@ func (e *ProcessingEngine) OnStop(_ context.Context, agentID, sessionID string) 
 				}
 				// Query type: agent replies via tool call — skip SendReply.
 				if msg.RequestType != reqTypeQuery && e.reply != nil {
-					if err := e.reply.SendReply(ctx, msg, agentID); err != nil {
+					if err := e.reply.SendReply(ctx, msg, agentID, agentState.Agent.Name); err != nil {
 						logger.Error("hook: send reply failed", "message_id", msg.ID, "err", err)
 					}
 				}

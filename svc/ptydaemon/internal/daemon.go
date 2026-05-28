@@ -102,6 +102,7 @@ func (d *defaultDaemon) Create(p PTYCreateParams) (*PTYTerminalInfo, error) {
 		master:          master,
 		cmd:             cmd,
 		submitKey:       p.SubmitKey,
+		userInputCh:     make(chan struct{}, 1),
 	}
 
 	d.mu.Lock()
@@ -177,6 +178,7 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 		cmd:             nil,
 		proc:            proc,
 		submitKey:       submitKey,
+		userInputCh:     make(chan struct{}, 1),
 	}
 
 	d.mu.Lock()
