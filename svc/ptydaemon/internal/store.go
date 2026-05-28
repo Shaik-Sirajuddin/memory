@@ -56,6 +56,8 @@ func NewStore(dbPath string) (*Store, error) {
 
 // applyMigrations creates the schema_version table if needed and runs any
 // migrations whose version number exceeds the current maximum.
+// On a brand-new database, all migrations are stamped as already applied
+// because createTableSQL already includes every column they would add.
 func applyMigrations(db *sql.DB) error {
 	if _, err := db.Exec(createVersionTableSQL); err != nil {
 		return fmt.Errorf("create schema_version: %w", err)
@@ -64,6 +66,16 @@ func applyMigrations(db *sql.DB) error {
 	var current int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&current); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	// Fresh database: stamp all known migrations as done — createTableSQL
+	// already contains every column they would add.
+	if current == 0 && len(schemaMigrations) > 0 {
+		latest := schemaMigrations[len(schemaMigrations)-1].version
+		if _, err := db.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (?)`, latest); err != nil {
+			return fmt.Errorf("stamp initial schema version: %w", err)
+		}
+		return nil
 	}
 
 	for _, m := range schemaMigrations {
