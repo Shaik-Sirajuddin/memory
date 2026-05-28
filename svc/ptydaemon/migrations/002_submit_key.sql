@@ -1,1 +1,0 @@
-ALTER TABLE pty_sessions ADD COLUMN submit_key TEXT NOT NULL DEFAULT '';

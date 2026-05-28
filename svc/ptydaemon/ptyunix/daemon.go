@@ -40,6 +40,10 @@ type Daemon struct {
 	// /proc inode scanning, which is broken for PTY masters: all ptmx fds
 	// share the same inode on Linux.
 	attachedPIDs sync.Map // sessionID (string) → client PID (int)
+
+	// serveCtx is set by ListenAndServe and used by handleStdinRelay to
+	// interrupt blocked reads when the daemon shuts down.
+	serveCtx context.Context
 }
 
 // NewDaemon returns an in-memory daemon with no persistent store.
@@ -56,6 +60,7 @@ func NewDaemonWithInner(inner internal.PTYDaemon) *Daemon {
 
 // ListenAndServe listens on socketPath and serves connections until ctx is cancelled.
 func (d *Daemon) ListenAndServe(ctx context.Context, socketPath string) error {
+	d.serveCtx = ctx
 	_ = os.Remove(socketPath)
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -297,12 +302,25 @@ func (d *Daemon) handleStdinRelay(conn *net.UnixConn, br *bufio.Reader, req Requ
 		return
 	}
 	respond(conn, Response{OK: true})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
+	ctx := d.serveCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// When the daemon shuts down, set a past deadline on conn to unblock any
+	// pending r.Read — preventing goroutine leak on dirty client disconnect.
+	go func() {
+		<-ctx.Done()
+		_ = conn.SetReadDeadline(time.Now())
+	}()
+
 	// io.MultiReader drains any bytes the json.Decoder pre-buffered, then
 	// continues reading from the raw connection.
 	r := io.MultiReader(br, conn)
-	_ = d.inner.StdinRelay(ctx, req.AgentID, req.SessionID, r)
+	if err := d.inner.StdinRelay(ctx, req.AgentID, req.SessionID, r); err != nil {
+		ptylog.Debug("stdin-relay ended", "session_id", req.SessionID, "err", err)
+	}
 }
 
 // handleDetach clears the attachment record for a session so the next caller

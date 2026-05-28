@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -25,7 +26,7 @@ const (
 	csiUShiftEnter        = "\x1b[13;2u"
 	modifyOtherShiftEnter = "\x1b[27;2;13~"
 
-	maxInputBuf  = 4096
+	maxInputBuf   = 4096
 	inputQueueCap = 2
 	// carrySize must cover the longest escape sequence we detect (7 bytes for CSI-u shift-enter).
 	carrySize = 8
@@ -50,9 +51,11 @@ type PTYTerminalInfo struct {
 
 type PTYTerminal struct {
 	PTYTerminalInfo
-	master    *os.File
-	cmd       *exec.Cmd
-	proc      *os.Process // set for adopted processes (cmd == nil)
+	master *os.File
+	cmd    *exec.Cmd
+	proc   *os.Process // set for adopted processes (cmd == nil)
+	// submitKey is set once at Create/Adopt and never modified; safe to read
+	// under execMu without holding t.mu.
 	submitKey string
 	mu        sync.Mutex
 
@@ -61,10 +64,11 @@ type PTYTerminal struct {
 	execMu sync.Mutex
 
 	// humanMu guards the input tracking state below.
-	humanMu      sync.Mutex
-	currentInput []byte
-	inputQueue   [inputQueueCap][]byte
-	queueLen     int
+	humanMu          sync.Mutex
+	currentInput     []byte
+	inputQueue       [inputQueueCap][]byte
+	queueLen         int
+	inBracketedPaste bool
 	// carry holds the tail of the last relay chunk to detect escape sequences
 	// that span two consecutive reads (edge case #1 in the plan).
 	carry  [carrySize]byte
@@ -127,7 +131,15 @@ func (t *PTYTerminal) trackHumanInput(chunk []byte) {
 		buf = chunk
 	}
 
-	if isSubmitOrClear(buf) {
+	// Update bracketed-paste state so we don't mistake embedded \r for submit.
+	if bytes.Contains(buf, []byte(pasteStart)) {
+		t.inBracketedPaste = true
+	}
+	if bytes.Contains(buf, []byte(pasteEnd)) {
+		t.inBracketedPaste = false
+	}
+
+	if !t.inBracketedPaste && isSubmitOrClear(buf) {
 		t.popQueueLocked()
 		t.currentInput = nil
 		return
@@ -159,6 +171,7 @@ func (t *PTYTerminal) snapshotInput() []byte {
 	// Drop oldest entry when queue is full (queue overflow, edge case #4).
 	if t.queueLen == inputQueueCap {
 		copy(t.inputQueue[:], t.inputQueue[1:])
+		t.inputQueue[inputQueueCap-1] = nil // release the old slice (minor: prevents GC leak)
 		t.queueLen--
 	}
 	t.inputQueue[t.queueLen] = snap
@@ -172,11 +185,12 @@ func (t *PTYTerminal) popQueueLocked() {
 		return
 	}
 	copy(t.inputQueue[:], t.inputQueue[1:])
+	t.inputQueue[t.queueLen-1] = nil // release the now-unused tail slot
 	t.queueLen--
 }
 
 // isSubmitOrClear returns true when b contains a line-submit or clear-line
-// sequence, signalling that the human's buffered input should be discarded.
+// sequence outside of a bracketed paste. Call only when inBracketedPaste is false.
 func isSubmitOrClear(b []byte) bool {
 	s := string(b)
 	return strings.ContainsAny(s, "\r\x15") ||
