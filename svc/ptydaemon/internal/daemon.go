@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -26,6 +27,10 @@ type PTYDaemon interface {
 	// GetMasterFd returns the PTY master file for the session.
 	// The caller must not close the file; it is owned by the daemon.
 	GetMasterFd(agentID, sessionID string) (*os.File, error)
+	// StdinRelay reads from r and forwards each chunk to the PTY master while
+	// tracking human input for ExecInSession write serialisation.
+	// Blocks until r returns EOF/error or ctx is cancelled.
+	StdinRelay(ctx context.Context, agentID, sessionID string, r io.Reader) error
 	Shutdown(ctx context.Context) error
 }
 
@@ -125,12 +130,12 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 		return nil // idempotent
 	}
 
-	// If caller doesn't supply a submit key, recover it from the store.
+	// Recover submit_key from store when caller omits it on re-adopt after restart.
 	// Non-fatal on error: exec falls back to plain \r.
 	if submitKey == "" {
 		rec, recErr := d.store.GetBySession(agentID, sessionID)
 		if recErr != nil {
-			_ = recErr // logged by caller layer; internal pkg has no logger
+			_ = recErr // internal pkg has no logger; surfaced to caller if needed
 		} else if rec != nil {
 			submitKey = rec.SubmitKey
 		}
@@ -244,4 +249,36 @@ func (d *defaultDaemon) removeTerminal(agentID, sessionID string) {
 	d.mu.Lock()
 	delete(d.terminals, termKey(agentID, sessionID))
 	d.mu.Unlock()
+}
+
+// StdinRelay reads from r in a loop, calling trackHumanInput and write on
+// each chunk so that ExecInSession can serialise around human input.
+func (d *defaultDaemon) StdinRelay(ctx context.Context, agentID, sessionID string, r io.Reader) error {
+	t := d.get(agentID, sessionID)
+	if t == nil {
+		return ErrNotFound
+	}
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		n, err := r.Read(buf)
+		if n > 0 {
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			t.trackHumanInput(chunk)
+			if werr := t.write(chunk); werr != nil {
+				return werr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
 }

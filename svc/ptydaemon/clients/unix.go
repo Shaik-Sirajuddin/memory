@@ -217,12 +217,47 @@ func (c *UnixSocketClient) Attach(ctx context.Context, sessionID string) error {
 
 	ptylog.Debug("client: attach received master fd, entering raw terminal", "session_id", sessionID, "fd", fds[0])
 	ptmx := os.NewFile(uintptr(fds[0]), "ptmx")
-	if err := attachToTerminal(ctx, ptmx); err != nil {
+
+	// Open a second connection for stdin relay so the daemon can track human
+	// input and serialise it against ExecInSession writes.
+	var stdinDst io.Writer = ptmx // fallback: write stdin directly to ptmx
+	relayConn, relayErr := c.openStdinRelay(sessionID)
+	if relayErr != nil {
+		ptylog.Warn("client: stdin-relay unavailable, falling back to direct ptmx write", "err", relayErr, "session_id", sessionID)
+	} else {
+		defer relayConn.Close()
+		stdinDst = relayConn
+	}
+
+	if err := attachToTerminal(ctx, ptmx, stdinDst); err != nil {
 		ptylog.Error("client: attach terminal setup failed", "err", err, "session_id", sessionID)
 		return err
 	}
 	ptylog.Debug("client: attach terminal io running", "session_id", sessionID)
 	return nil
+}
+
+// openStdinRelay dials the daemon, sends a stdin-relay handshake, and returns
+// the open connection ready for raw stdin bytes. The caller must close it.
+func (c *UnixSocketClient) openStdinRelay(sessionID string) (net.Conn, error) {
+	conn, err := net.Dial("unix", c.socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.NewEncoder(conn).Encode(unixRequest{Op: "stdin-relay", SessionID: sessionID}); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	var resp unixResponse
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if !resp.OK {
+		conn.Close()
+		return nil, errors.New(resp.Error)
+	}
+	return conn, nil
 }
 
 // ListAttached returns all processes holding the PTY master fd of the session.
@@ -345,7 +380,7 @@ func (c *UnixSocketClient) do(req unixRequest) error {
 	return nil
 }
 
-func attachToTerminal(ctx context.Context, ptmx *os.File) error {
+func attachToTerminal(ctx context.Context, ptmx *os.File, stdinDst io.Writer) error {
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		_ = ptmx.Close()
@@ -388,7 +423,7 @@ func attachToTerminal(ctx context.Context, ptmx *os.File) error {
 	}()
 
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(ptmx, os.Stdin); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(stdinDst, os.Stdin); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(os.Stdout, ptmx); done <- struct{}{} }()
 	select {
 	case <-ctx.Done():
