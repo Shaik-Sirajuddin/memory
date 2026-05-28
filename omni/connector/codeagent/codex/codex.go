@@ -117,7 +117,7 @@ func New(workDir, model string, c codeagent.PTYClient, opts ...Option) (codeagen
 	// 	model = DefaultModel
 	// }
 
-	ver, _ := captureOutput(workDir, binPath, "--version")
+	ver, _ := captureOutput(workDir, nil, binPath, "--version")
 	ver = trimSpace(ver)
 	logger.Info("codex agent initialised", "workDir", workDir, "model", model, "version", ver)
 
