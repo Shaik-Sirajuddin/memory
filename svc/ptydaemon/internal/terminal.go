@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -102,16 +103,16 @@ func (t *PTYTerminal) kill() error {
 }
 
 // execPrompt serialises the paste write under execMu, then releases the lock
-// before sleeping so concurrent ExecInSession callers are not forced to wait
-// 100ms each (N callers would otherwise compound to N×100ms latency).
-// The second submit-key write re-acquires execMu so it does not interleave
-// with another caller's paste write.
+// before each sleep so concurrent ExecInSession callers are not forced to wait.
+// The submit key is sent up to three times (immediate + two retries at 100ms
+// intervals) to handle terminals that process the paste before the key fires.
+// Each retry is skipped if the human types during the wait window.
 func (t *PTYTerminal) execPrompt(prompt string) error {
 	t.execMu.Lock()
 	saved := t.snapshotInput()
 
-	// Drain any stale user-input signal so the select below only reacts to
-	// input that arrives after this exec started.
+	// Drain any stale user-input signal so retries only react to input that
+	// arrives after this exec started.
 	if t.userInputCh != nil {
 		select {
 		case <-t.userInputCh:
@@ -119,36 +120,46 @@ func (t *PTYTerminal) execPrompt(prompt string) error {
 		}
 	}
 
-	// First attempt: paste + submit key + reinject in one write.
+	// Attempt 1: paste + submit key + reinject in one write.
 	payload := buildExecPayload(prompt, t.submitKey, saved)
 	err := t.write(payload)
-	t.execMu.Unlock() // release before sleeping — do not block concurrent callers
+	t.execMu.Unlock()
 	if err != nil {
 		return err
 	}
 
-	// Wait up to 100ms outside the lock, then re-send the submit key.
-	// Skip if the human types during the window.
-	timer := time.NewTimer(100 * time.Millisecond)
-	defer timer.Stop()
+	submitKey := submitSeq(t.submitKey)
 
-	var skip bool
-	if t.userInputCh != nil {
-		select {
-		case <-timer.C:
-		case <-t.userInputCh:
-			skip = true
+	for attempt := 2; attempt <= 3; attempt++ {
+		if userInputArrived(t.userInputCh, 100*time.Millisecond) {
+			return nil
 		}
-	} else {
-		<-timer.C
+		t.execMu.Lock()
+		werr := t.write(submitKey)
+		t.execMu.Unlock()
+		slog.Debug("ptydaemon: submit-key retry", "attempt", attempt, "session_id", t.SessionID, "err", werr)
+		if werr != nil {
+			return werr
+		}
 	}
-	if skip {
-		return nil
-	}
+	return nil
+}
 
-	t.execMu.Lock()
-	defer t.execMu.Unlock()
-	return t.write(submitSeq(t.submitKey))
+// userInputArrived waits up to d for a signal on ch.
+// Returns true if the human typed during the window, false if the timer fired.
+func userInputArrived(ch chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	if ch == nil {
+		<-timer.C
+		return false
+	}
+	select {
+	case <-timer.C:
+		return false
+	case <-ch:
+		return true
+	}
 }
 
 func (t *PTYTerminal) setStatus(s Status) {
