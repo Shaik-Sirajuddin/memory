@@ -74,6 +74,11 @@ type PTYTerminal struct {
 	// that span two consecutive reads (edge case #1 in the plan).
 	carry  [carrySize]byte
 	carryN int
+
+	// userInputCh is signalled (non-blocking) by trackHumanInput whenever the
+	// relay receives a chunk from the human. execPrompt drains it before
+	// writing, then waits on it during the submit-key delay.
+	userInputCh chan struct{}
 }
 
 func (t *PTYTerminal) write(p []byte) error {
@@ -103,19 +108,38 @@ func (t *PTYTerminal) execPrompt(prompt string) error {
 	defer t.execMu.Unlock()
 	saved := t.snapshotInput()
 
-	// Write the bracketed-paste content first.
-	paste := []byte(ctrlU + pasteStart + prompt + pasteEnd)
-	if err := t.write(paste); err != nil {
+	// Drain any stale user-input signal so the select below only reacts to
+	// input that arrives after this exec started.
+	if t.userInputCh != nil {
+		select {
+		case <-t.userInputCh:
+		default:
+		}
+	}
+
+	// First attempt: send paste + submit key + reinject together.
+	// The submit key may be processed before the paste is fully rendered,
+	// so we send a second one after a delay as a guaranteed delivery.
+	payload := buildExecPayload(prompt, t.submitKey, saved)
+	if err := t.write(payload); err != nil {
 		return err
 	}
 
-	// Brief delay before the submit key so the terminal has time to finish
-	// processing the paste before the key fires. Temporary workaround.
-	time.Sleep(100 * time.Millisecond)
-
-	// Write submit key + reinject atomically in one call.
-	submit := append(submitSeq(t.submitKey), saved...)
-	return t.write(submit)
+	// Wait up to 100ms then re-send the submit key.
+	// Skip if the human types during the window — they are at the keyboard
+	// and will submit themselves.
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	if t.userInputCh != nil {
+		select {
+		case <-timer.C:
+			return t.write(submitSeq(t.submitKey))
+		case <-t.userInputCh:
+			return nil
+		}
+	}
+	<-timer.C
+	return t.write(submitSeq(t.submitKey))
 }
 
 func (t *PTYTerminal) setStatus(s Status) {
@@ -128,6 +152,14 @@ func (t *PTYTerminal) setStatus(s Status) {
 // to the PTY master. It maintains currentInput and pops the queue when the
 // human submits or clears the line.
 func (t *PTYTerminal) trackHumanInput(chunk []byte) {
+	// Signal execPrompt that the human is at the keyboard.
+	if t.userInputCh != nil {
+		select {
+		case t.userInputCh <- struct{}{}:
+		default:
+		}
+	}
+
 	t.humanMu.Lock()
 	defer t.humanMu.Unlock()
 
