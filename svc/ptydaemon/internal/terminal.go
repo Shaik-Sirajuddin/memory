@@ -129,9 +129,11 @@ func (t *PTYTerminal) execPrompt(prompt string) error {
 	}
 
 	submitKey := submitSeq(t.submitKey)
+	retryDelays := []time.Duration{1 * time.Second, 2 * time.Second, 3 * time.Second}
 
-	for attempt := 2; attempt <= 3; attempt++ {
-		if userInputArrived(t.userInputCh, 100*time.Millisecond) {
+	for i, delay := range retryDelays {
+		attempt := i + 2
+		if userInputArrived(t.userInputCh, delay) {
 			return nil
 		}
 		t.execMu.Lock()
