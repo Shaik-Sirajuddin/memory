@@ -60,10 +60,11 @@ download_and_install() {
   echo "==> running setup"
   if [[ "$EUID" -eq 0 ]]; then
     BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
-  elif sudo -n true 2>/dev/null; then
+  elif sudo -n true 2>/dev/null || sudo -n -l 2>/dev/null | grep -q "NOPASSWD"; then
     sudo BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
   else
-    echo "    no sudo access — installing for current user under ~/.local"
+    echo "    no passwordless sudo — installing for current user under ~/.local"
+    echo "    (if you have sudo, re-run with: sudo bash install.sh)"
     OMNI_USER_INSTALL=1 BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
   fi
 }

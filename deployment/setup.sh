@@ -150,6 +150,15 @@ check_agent_binaries() {
 }
 
 reload_and_enable() {
+  if [[ "$USER_INSTALL" == "1" ]]; then
+    if [[ -z "${XDG_RUNTIME_DIR:-}" ]] && [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+      echo "error: user-mode systemd requires an active D-Bus session (XDG_RUNTIME_DIR not set)." >&2
+      echo "       Run this script in a login session, or first run:" >&2
+      echo "         loginctl enable-linger $(id -un)" >&2
+      echo "         export XDG_RUNTIME_DIR=/run/user/$(id -u)" >&2
+      exit 1
+    fi
+  fi
   $SYSTEMCTL daemon-reload
   if $SYSTEMCTL is-active --quiet "$SERVICE_NAME"; then
     echo "==> restarting $SERVICE_NAME"
