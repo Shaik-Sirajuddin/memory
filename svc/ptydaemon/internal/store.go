@@ -15,10 +15,15 @@ CREATE TABLE IF NOT EXISTS pty_sessions (
     session_id  TEXT     NOT NULL,
     pid         INTEGER  NOT NULL,
     status      TEXT     NOT NULL DEFAULT 'active',
+    submit_key  TEXT     NOT NULL DEFAULT '',
     started_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     stopped_at  DATETIME,
     PRIMARY KEY (agent_id, session_id)
 );`
+
+const migrations = `
+ALTER TABLE pty_sessions ADD COLUMN submit_key TEXT NOT NULL DEFAULT '';
+`
 
 type Store struct {
 	db *sql.DB
@@ -33,13 +38,16 @@ func NewStore(dbPath string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// Best-effort: add submit_key column to existing databases.
+	// Fails silently on fresh databases where the column already exists.
+	_, _ = db.Exec(migrations)
 	return &Store{db: db}, nil
 }
 
-func (s *Store) Insert(info *PTYTerminalInfo) error {
+func (s *Store) Insert(info *PTYTerminalInfo, submitKey string) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO pty_sessions (agent_id, session_id, pid, status) VALUES (?, ?, ?, ?)`,
-		info.AgentID, info.SessionID, info.PID, string(info.Status),
+		`INSERT OR REPLACE INTO pty_sessions (agent_id, session_id, pid, status, submit_key) VALUES (?, ?, ?, ?, ?)`,
+		info.AgentID, info.SessionID, info.PID, string(info.Status), submitKey,
 	)
 	return err
 }
@@ -83,13 +91,14 @@ type PTYSessionRecord struct {
 	SessionID string
 	PID       int
 	Status    Status
+	SubmitKey string
 	StartedAt time.Time
 	StoppedAt *time.Time
 }
 
 func (s *Store) GetBySessionOnly(sessionID string) (*PTYSessionRecord, error) {
 	row := s.db.QueryRow(
-		`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions WHERE session_id = ? LIMIT 1`,
+		`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions WHERE session_id = ? LIMIT 1`,
 		sessionID,
 	)
 	return scanRecord(row.Scan)
@@ -97,7 +106,7 @@ func (s *Store) GetBySessionOnly(sessionID string) (*PTYSessionRecord, error) {
 
 func (s *Store) GetBySession(agentID, sessionID string) (*PTYSessionRecord, error) {
 	row := s.db.QueryRow(
-		`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? AND session_id = ?`,
+		`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? AND session_id = ?`,
 		agentID, sessionID,
 	)
 	return scanRecord(row.Scan)
@@ -110,11 +119,11 @@ func (s *Store) ListByAgent(agentID string) ([]*PTYSessionRecord, error) {
 	)
 	if agentID == "" {
 		rows, err = s.db.Query(
-			`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions ORDER BY started_at DESC`,
+			`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions ORDER BY started_at DESC`,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? ORDER BY started_at DESC`,
+			`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? ORDER BY started_at DESC`,
 			agentID,
 		)
 	}
@@ -155,7 +164,7 @@ func scanRecord(scan func(...any) error) (*PTYSessionRecord, error) {
 		startedAt string
 		stoppedAt sql.NullString
 	)
-	if err := scan(&rec.AgentID, &rec.SessionID, &rec.PID, &status, &startedAt, &stoppedAt); err != nil {
+	if err := scan(&rec.AgentID, &rec.SessionID, &rec.PID, &status, &rec.SubmitKey, &startedAt, &stoppedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
