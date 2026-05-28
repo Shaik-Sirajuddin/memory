@@ -55,7 +55,16 @@ func termKey(agentID, sessionID string) string {
 func (d *defaultDaemon) get(agentID, sessionID string) *PTYTerminal {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.terminals[termKey(agentID, sessionID)]
+	if agentID != "" {
+		return d.terminals[termKey(agentID, sessionID)]
+	}
+	// agentID omitted (e.g. from stdin-relay / attach): scan by sessionID.
+	for _, t := range d.terminals {
+		if t.SessionID == sessionID {
+			return t
+		}
+	}
+	return nil
 }
 
 func (d *defaultDaemon) Create(p PTYCreateParams) (*PTYTerminalInfo, error) {
