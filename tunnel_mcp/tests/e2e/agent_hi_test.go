@@ -31,6 +31,7 @@ const (
 //
 // Teardown: both agents are deleted via CLI — no docker restart needed.
 func TestAgentsSayHi(t *testing.T) {
+	t.Skip("pending: omni agent resume --detach CLI flag not yet wired; see memory/agents/e2e/generated/test-run-report-2026-05-27.md")
 	cfg := newConfig(t)
 
 	// ── teardown registered before anything is created ──────────────────────

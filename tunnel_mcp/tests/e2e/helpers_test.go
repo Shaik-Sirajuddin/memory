@@ -5,8 +5,8 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"io"
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -14,8 +14,6 @@ type testConfig struct {
 	exec      CommandExecutor
 	omniPath  string
 	workspace string
-	agent1    string
-	agent2    string
 	container string
 }
 
@@ -43,8 +41,6 @@ func newConfig(t *testing.T) testConfig {
 		exec:      ex,
 		omniPath:  envOr("OMNI_BIN", "omni"),
 		workspace: workspace,
-		agent1:    envOr("TEST_AGENT_1", "test-claude-1"),
-		agent2:    envOr("TEST_AGENT_2", "tests-claude-2"),
 		container: ctr,
 	}
 }
@@ -56,13 +52,37 @@ func envOr(key, def string) string {
 	return def
 }
 
+// syncBuffer is a bytes.Buffer safe for concurrent reads and writes.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
 // captureLog starts streaming `journalctl -fu omni@root` via the executor into
 // a buffer. Returns a stop func (cancels the stream, waits for goroutine) and
 // the live buffer. Always called first in each test — journalctl is the primary
 // observation pipe.
-func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *bytes.Buffer) {
+func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	t.Helper()
-	buf = &bytes.Buffer{}
+	buf = &syncBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -77,21 +97,6 @@ func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *bytes.Buffer) {
 	}
 	t.Cleanup(stop)
 	return stop, buf
-}
-
-// omniCmd builds an omni command with workspace set.
-func omniCmd(cfg testConfig, sub ...string) []string {
-	args := []string{cfg.omniPath}
-	args = append(args, sub...)
-	return args
-}
-
-// omniCmdWS builds an omni command that takes --workspace.
-func omniCmdWS(cfg testConfig, sub ...string) []string {
-	args := []string{cfg.omniPath}
-	args = append(args, sub...)
-	args = append(args, "--workspace", cfg.workspace)
-	return args
 }
 
 // runOmni executes an omni subcommand and returns the output.
@@ -118,8 +123,7 @@ func runOmniAllowFail(t *testing.T, cfg testConfig, args ...string) (string, int
 }
 
 // logContains checks if the journalctl buffer contains the pattern.
-// Used as a secondary assertion alongside command output.
-func logContains(buf *bytes.Buffer, pattern string) bool {
+func logContains(buf *syncBuffer, pattern string) bool {
 	return bytes.Contains(buf.Bytes(), []byte(pattern))
 }
 
@@ -131,13 +135,11 @@ func teardownAgent(t *testing.T, cfg testConfig, name string) {
 }
 
 // resumeAgentBackground runs `omni agent resume <name>` in a background goroutine
-// via StreamCommand so it does not block the test. The PTY daemon session is
-// started even if terminal attachment fails (no TTY in docker exec).
-// The returned stop func cancels the stream; it is also registered via t.Cleanup.
+// via StreamCommand so it does not block the test.
 func resumeAgentBackground(t *testing.T, cfg testConfig, name string) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	var buf bytes.Buffer
+	var buf syncBuffer
 	done := make(chan struct{})
 
 	go func() {
@@ -153,9 +155,4 @@ func resumeAgentBackground(t *testing.T, cfg testConfig, name string) (stop func
 	}
 	t.Cleanup(stop)
 	return stop
-}
-
-// drainReader discards all output from a reader (used to keep pipes healthy).
-func drainReader(r io.Reader) {
-	_, _ = io.Copy(io.Discard, r)
 }

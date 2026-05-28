@@ -15,8 +15,8 @@ services:
       - omni-auth:/root/.config
       - omni-data:/root/.local/share/memory
       - ./local/.bash_history:/root/.bash_history
-      - ./local/agents/test-claude-1:/build/memory/agents/test-claude-1
-      - ./local/agents/tests-claude-2:/build/memory/agents/tests-claude-2
+      - ./local/agents/test-claude-1:/build/memory/agents/test-claude-1  # e2e test agent workspace
+      - ./local/agents/tests-claude-2:/build/memory/agents/tests-claude-2 # e2e test agent workspace
       - agent-claude:/root/.claude
       - agent-codex:/root/.codex
       - agent-gemini:/root/.gemini
