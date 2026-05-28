@@ -14,6 +14,7 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
+	codeagentutils "github.com/Shaik-Sirajuddin/memory/connector/codeagent/utils"
 )
 
 // TODO : attach parser methods to ClaudeParser
@@ -221,6 +222,10 @@ func lookPath(name string) (string, error) {
 		if path, err := exec.LookPath(candidate); err == nil {
 			return path, nil
 		}
+	}
+	// Fall back to NVM-managed node bins when the process PATH lacks them.
+	if path, err := codeagentutils.LookPathNVM(name); err == nil {
+		return path, nil
 	}
 	return exec.LookPath(name)
 }
