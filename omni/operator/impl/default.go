@@ -294,10 +294,8 @@ func (o *DefaultOperator) ExecInSession(params operator.ExecInSessionParams) (*o
 	// Check whether the session is currently attached via the pty daemon.
 	sessionActive := false
 	if o.ptyDaemon != nil {
-		if mac, ok := o.ptyDaemon.(interface{ MetaAttached(string) (int, error) }); ok {
-			if count, err := mac.MetaAttached(sessionID); err == nil {
-				sessionActive = count >= 1
-			}
+		if count, err := o.ptyDaemon.MetaAttached(sessionID); err == nil {
+			sessionActive = count >= 1
 		}
 	}
 

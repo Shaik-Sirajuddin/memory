@@ -277,9 +277,13 @@ func (d *Daemon) handleAttach(conn *net.UnixConn, req Request) {
 
 // handleDetach clears the attachment record for a session so the next caller
 // can attach without waiting for the previous client's process to be reaped.
+// Idempotent: succeeds even when the session was never attached.
 func (d *Daemon) handleDetach(conn *net.UnixConn, req Request) {
-	ptylog.Debug("detach", "session_id", req.SessionID)
-	d.attachedPIDs.Delete(req.SessionID)
+	if _, loaded := d.attachedPIDs.LoadAndDelete(req.SessionID); loaded {
+		ptylog.Debug("detach: cleared attachment record", "session_id", req.SessionID)
+	} else {
+		ptylog.Warn("detach: session had no attachment record (idempotent)", "session_id", req.SessionID)
+	}
 	respond(conn, Response{OK: true})
 }
 
