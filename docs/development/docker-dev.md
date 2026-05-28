@@ -39,13 +39,13 @@ On first start the container will:
 2. Write the systemd unit
 3. Hand off to systemd — `omni@root.service` starts automatically
 
-## Connect
+After the container is up you are dropped straight into an interactive shell inside it.
+
+To re-attach to a running container:
 
 ```bash
 make docker-connect
 ```
-
-Opens an interactive login shell inside the container.
 
 ## Rebuild Image
 
@@ -60,8 +60,9 @@ Agent configs and DB persist across rebuilds — they are bind-mounted from `dev
 ## Health Checks
 
 ```bash
-# MCP streamable HTTP (agent clients)
-curl -s http://127.0.0.1:18062/mcp
+# MCP streamable HTTP (agent clients) — exec into container, no host port binding
+docker compose -f development/docker-compose.yaml exec ubuntu \
+  curl -s http://127.0.0.1:18062/mcp
 
 # Pure HTTP service (unix socket)
 docker compose -f development/docker-compose.yaml exec ubuntu \
