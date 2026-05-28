@@ -179,7 +179,7 @@ func (a *codexAgent) Capabilities() (*codeagent.Capabilities, error) {
 	return &codeagent.Capabilities{
 		Hooks: &hooks.Capabilities{
 			PreToolUse: true, PostToolUse: true, PostToolUseFailure: true,
-			PreSessionStart: true, PostSessionStart: false,
+			SessionStart: true, SessionEnd: false,
 			PrePrompt: true, PostPrompt: false,
 		},
 		Streaming: true, MCPSupport: false, Worktrees: false, Subagents: false,
@@ -396,7 +396,7 @@ func looksLikeModelID(token string) bool {
 func (a *codexAgent) SupportedHooks() (*hooks.Capabilities, error) {
 	return &hooks.Capabilities{
 		PreToolUse: true, PostToolUse: true, PostToolUseFailure: true,
-		PreSessionStart: true, PostSessionStart: false,
+		SessionStart: true, SessionEnd: false,
 		PrePrompt: true, PostPrompt: false,
 	}, nil
 }

@@ -794,11 +794,11 @@ func (s *stubCodeAgent) PostToolUseFailureParams(any) (*hooks.PostToolUseFailure
 	return nil, nil
 }
 
-func (s *stubCodeAgent) PreSessionStartParams(any) (*hooks.PreSessionStartParams, error) {
+func (s *stubCodeAgent) SessionStartParams(any) (*hooks.SessionStartParams, error) {
 	return nil, nil
 }
 
-func (s *stubCodeAgent) PostSessionStartParams(any) (*hooks.PostSessionStartParams, error) {
+func (s *stubCodeAgent) SessionEndParams(any) (*hooks.SessionEndParams, error) {
 	return nil, nil
 }
 
@@ -822,11 +822,11 @@ func (s *stubCodeAgent) PostToolUseFailureResult(any) (*hooks.PostToolUseFailure
 	return nil, nil
 }
 
-func (s *stubCodeAgent) PreSessionStartResult(any) (*hooks.PreSessionStartResult, error) {
+func (s *stubCodeAgent) SessionStartResult(any) (*hooks.SessionStartResult, error) {
 	return nil, nil
 }
 
-func (s *stubCodeAgent) PostSessionStartResult(any) (*hooks.PostSessionStartResult, error) {
+func (s *stubCodeAgent) SessionEndResult(any) (*hooks.SessionEndResult, error) {
 	return nil, nil
 }
 

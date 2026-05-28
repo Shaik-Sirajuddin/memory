@@ -133,12 +133,12 @@ func (a *ClaudeParser) PostToolUseFailureParams(raw any) (*hooks.PostToolUseFail
 	return parseHookInput[hooks.PostToolUseFailureParams](raw)
 }
 
-func (a *ClaudeParser) PreSessionStartParams(raw any) (*hooks.PreSessionStartParams, error) {
-	return parseHookInput[hooks.PreSessionStartParams](raw)
+func (a *ClaudeParser) SessionStartParams(raw any) (*hooks.SessionStartParams, error) {
+	return parseHookInput[hooks.SessionStartParams](raw)
 }
 
-func (a *ClaudeParser) PostSessionStartParams(raw any) (*hooks.PostSessionStartParams, error) {
-	return parseHookInput[hooks.PostSessionStartParams](raw)
+func (a *ClaudeParser) SessionEndParams(raw any) (*hooks.SessionEndParams, error) {
+	return parseHookInput[hooks.SessionEndParams](raw)
 }
 
 func (a *ClaudeParser) PrePromptInputParams(raw any) (*hooks.PrePromptInputParams, error) {
@@ -161,12 +161,12 @@ func (a *ClaudeParser) PostToolUseFailureResult(raw any) (*hooks.PostToolUseFail
 	return parseHookInput[hooks.PostToolUseFailureResult](raw)
 }
 
-func (a *ClaudeParser) PreSessionStartResult(raw any) (*hooks.PreSessionStartResult, error) {
-	return parseHookInput[hooks.PreSessionStartResult](raw)
+func (a *ClaudeParser) SessionStartResult(raw any) (*hooks.SessionStartResult, error) {
+	return parseHookInput[hooks.SessionStartResult](raw)
 }
 
-func (a *ClaudeParser) PostSessionStartResult(raw any) (*hooks.PostSessionStartResult, error) {
-	return parseHookInput[hooks.PostSessionStartResult](raw)
+func (a *ClaudeParser) SessionEndResult(raw any) (*hooks.SessionEndResult, error) {
+	return parseHookInput[hooks.SessionEndResult](raw)
 }
 
 func (a *ClaudeParser) PrePromptInputResult(raw any) (*hooks.PrePromptInputResult, error) {
