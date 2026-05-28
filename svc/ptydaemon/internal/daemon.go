@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -26,6 +27,10 @@ type PTYDaemon interface {
 	// GetMasterFd returns the PTY master file for the session.
 	// The caller must not close the file; it is owned by the daemon.
 	GetMasterFd(agentID, sessionID string) (*os.File, error)
+	// StdinRelay reads from r and forwards each chunk to the PTY master while
+	// tracking human input for ExecInSession write serialisation.
+	// Blocks until r returns EOF/error or ctx is cancelled.
+	StdinRelay(ctx context.Context, agentID, sessionID string, r io.Reader) error
 	Shutdown(ctx context.Context) error
 }
 
@@ -90,7 +95,7 @@ func (d *defaultDaemon) Create(p PTYCreateParams) (*PTYTerminalInfo, error) {
 	d.terminals[key] = t
 	d.mu.Unlock()
 
-	if err := d.store.Insert(&info); err != nil {
+	if err := d.store.Insert(&info, p.SubmitKey); err != nil {
 		return nil, fmt.Errorf("store insert: %w", err)
 	}
 
@@ -125,6 +130,13 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 		return nil // idempotent
 	}
 
+	// Recover submit_key from store when caller omits it on re-adopt after restart.
+	if submitKey == "" {
+		if rec, err := d.store.GetBySession(agentID, sessionID); err == nil && rec != nil {
+			submitKey = rec.SubmitKey
+		}
+	}
+
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("find process %d: %w", pid, err)
@@ -154,7 +166,7 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 	d.terminals[key] = t
 	d.mu.Unlock()
 
-	if err := d.store.Insert(&info); err != nil {
+	if err := d.store.Insert(&info, submitKey); err != nil {
 		return fmt.Errorf("store insert: %w", err)
 	}
 
@@ -233,4 +245,36 @@ func (d *defaultDaemon) removeTerminal(agentID, sessionID string) {
 	d.mu.Lock()
 	delete(d.terminals, termKey(agentID, sessionID))
 	d.mu.Unlock()
+}
+
+// StdinRelay reads from r in a loop, calling trackHumanInput and write on
+// each chunk so that ExecInSession can serialise around human input.
+func (d *defaultDaemon) StdinRelay(ctx context.Context, agentID, sessionID string, r io.Reader) error {
+	t := d.get(agentID, sessionID)
+	if t == nil {
+		return ErrNotFound
+	}
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		n, err := r.Read(buf)
+		if n > 0 {
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			t.trackHumanInput(chunk)
+			if werr := t.write(chunk); werr != nil {
+				return werr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
 }

@@ -1,10 +1,12 @@
 package ptyunix
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -88,8 +90,12 @@ func (d *Daemon) ListenAndServe(ctx context.Context, socketPath string) error {
 func (d *Daemon) handleConn(conn *net.UnixConn) {
 	defer conn.Close()
 
+	// Use a bufio.Reader so we can pass any pre-buffered bytes to the stdin
+	// relay without losing them (json.Decoder reads ahead internally).
+	br := bufio.NewReader(conn)
+
 	var req Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	if err := json.NewDecoder(br).Decode(&req); err != nil {
 		ptylog.Debug("failed to decode request", "err", err)
 		return
 	}
@@ -107,6 +113,9 @@ func (d *Daemon) handleConn(conn *net.UnixConn) {
 		d.handleAttach(conn, req)
 	case "detach":
 		d.handleDetach(conn, req)
+	case "stdin-relay":
+		// Pass the bufio.Reader so pre-buffered bytes are not lost.
+		d.handleStdinRelay(conn, br, req)
 	case "pipe":
 		d.handlePipe(conn, req)
 	case "exec":
@@ -273,6 +282,27 @@ func (d *Daemon) handleAttach(conn *net.UnixConn, req Request) {
 		d.attachedPIDs.Store(req.SessionID, clientPID)
 	}
 	ptylog.Info("fd granted to client", "session_id", req.SessionID, "client_pid", clientPID)
+}
+
+// handleStdinRelay acknowledges the request then enters a raw streaming loop,
+// forwarding every chunk from the client to the PTY master via
+// inner.StdinRelay — which calls trackHumanInput before each write so that
+// ExecInSession can serialise around human-typed input.
+//
+// br must be the bufio.Reader wrapping conn from handleConn; it carries any
+// bytes the JSON decoder pre-buffered after reading the request envelope.
+func (d *Daemon) handleStdinRelay(conn *net.UnixConn, br *bufio.Reader, req Request) {
+	if d.inner == nil {
+		respond(conn, Response{Error: "stdin-relay requires a store-backed daemon"})
+		return
+	}
+	respond(conn, Response{OK: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// io.MultiReader drains any bytes the json.Decoder pre-buffered, then
+	// continues reading from the raw connection.
+	r := io.MultiReader(br, conn)
+	_ = d.inner.StdinRelay(ctx, req.AgentID, req.SessionID, r)
 }
 
 // handleDetach clears the attachment record for a session so the next caller
