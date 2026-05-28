@@ -29,6 +29,25 @@ install_and_setup() {
 
 install_and_setup
 
+# ── resolve auth: pick OAuth token OR API key per provider ───────────────────
+resolve_auth() {
+  # claude: OAuth token takes precedence over API key
+  if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    export CLAUDE_CODE_OAUTH_TOKEN
+    unset ANTHROPIC_API_KEY 2>/dev/null || true
+  fi
+  # codex: map subscription OAuth token to OPENAI_API_KEY if no API key set
+  if [[ -z "${OPENAI_API_KEY:-}" && -n "${OPENAI_OAUTH_TOKEN:-}" ]]; then
+    export OPENAI_API_KEY="$OPENAI_OAUTH_TOKEN"
+  fi
+  # gemini: OAuth token takes precedence over API key
+  if [[ -n "${GEMINI_CODE_OAUTH_TOKEN:-}" ]]; then
+    export GEMINI_CODE_OAUTH_TOKEN
+    unset GEMINI_API_KEY 2>/dev/null || true
+  fi
+}
+resolve_auth
+
 # ── export runtime socket paths for all child processes (hooks, CLIs) ─────────
 write_runtime_env() {
   # /etc/environment is PAM-only; write to profile.d so all bash sessions inherit it
@@ -61,6 +80,13 @@ write_mcp_dropin() {
   if [[ -n "${AXO_LINK_MCP_ADDR:-}" ]]; then
     printf 'Environment=AXO_LINK_MCP_ADDR=%s\n' "$AXO_LINK_MCP_ADDR" >> "$conf"
   fi
+  # agent auth — pass whichever vars are set so omni-server inherits them
+  for var in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN \
+             OPENAI_API_KEY \
+             GEMINI_API_KEY GEMINI_CODE_OAUTH_TOKEN \
+             ANTHROPIC_MODEL CODEX_MODEL GEMINI_MODEL; do
+    [[ -n "${!var:-}" ]] && printf 'Environment=%s=%s\n' "$var" "${!var}" >> "$conf"
+  done
 }
 write_mcp_dropin
 
@@ -111,6 +137,8 @@ EOF
     local api_key_suffix=""
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
       api_key_suffix="${ANTHROPIC_API_KEY: -20}"
+    elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+      api_key_suffix="${CLAUDE_CODE_OAUTH_TOKEN: -20}"
     fi
     cat > /root/.claude.json <<EOF
 {
@@ -191,10 +219,16 @@ chmod -f 660 /var/lib/omni-root/ptydaemon.db 2>/dev/null || true
 # ── warn about unconfigured agents ────────────────────────────────────────────
 warn_missing_keys() {
   local warned=0
-  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then echo "  WARNING: ANTHROPIC_API_KEY not set — claude will not authenticate"; warned=1; fi
-  if [[ -z "${OPENAI_API_KEY:-}"    ]]; then echo "  WARNING: OPENAI_API_KEY not set    — codex will not authenticate";  warned=1; fi
-  if [[ -z "${GEMINI_API_KEY:-}"    ]]; then echo "  WARNING: GEMINI_API_KEY not set    — gemini will not authenticate"; warned=1; fi
-  if [[ $warned -eq 1 ]]; then echo "  → set missing keys in development/.env.docker (see .env.docker.example)"; fi
+  if [[ -z "${ANTHROPIC_API_KEY:-}" && -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    echo "  WARNING: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN set — claude will not authenticate"; warned=1
+  fi
+  if [[ -z "${OPENAI_API_KEY:-}" && -z "${OPENAI_OAUTH_TOKEN:-}" ]]; then
+    echo "  WARNING: neither OPENAI_API_KEY nor OPENAI_OAUTH_TOKEN set       — codex will not authenticate";  warned=1
+  fi
+  if [[ -z "${GEMINI_API_KEY:-}" && -z "${GEMINI_CODE_OAUTH_TOKEN:-}" ]]; then
+    echo "  WARNING: neither GEMINI_API_KEY nor GEMINI_CODE_OAUTH_TOKEN set  — gemini will not authenticate"; warned=1
+  fi
+  if [[ $warned -eq 1 ]]; then echo "  → set keys/tokens in development/.env.docker (see .env.docker.example)"; fi
 }
 warn_missing_keys
 
