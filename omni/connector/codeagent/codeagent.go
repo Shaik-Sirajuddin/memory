@@ -112,6 +112,8 @@ type PTYClient interface {
 	Attach(ctx context.Context, sessionID string) error
 	Exec(sessionID, input string) error
 	Stop(sessionID string) error
+	StopSafe(sessionID string, force bool) error
+	Detach(sessionID string) error
 	List(agentID string) ([]*PTYTerminalInfo, error)
 	Get(agentID, sessionID string) (*PTYTerminalInfo, error)
 }

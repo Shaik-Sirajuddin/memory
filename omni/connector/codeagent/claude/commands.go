@@ -201,6 +201,10 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		} else {
 			logger.Info("Resume: attached to active PTY daemon session", "sessionID", resumeID)
 		}
+		if p.Detached {
+			logger.Info("Resume: leaving PTY daemon session detached", "sessionID", resumeID)
+			return &codeagent.ResumeSessionResult{ProcessID: "", SessionID: resumeID}, nil
+		}
 		logger.Info("Resume: attaching PTY daemon session", "sessionID", resumeID)
 		done := make(chan error, 1)
 		go func() {
