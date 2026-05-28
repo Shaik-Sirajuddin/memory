@@ -101,11 +101,13 @@ func (t *PTYTerminal) kill() error {
 	return nil
 }
 
-// execPrompt serialises the full snapshot→exec→reinject sequence under execMu
-// so concurrent callers cannot interleave their writes on the PTY master.
+// execPrompt serialises the paste write under execMu, then releases the lock
+// before sleeping so concurrent ExecInSession callers are not forced to wait
+// 100ms each (N callers would otherwise compound to N×100ms latency).
+// The second submit-key write re-acquires execMu so it does not interleave
+// with another caller's paste write.
 func (t *PTYTerminal) execPrompt(prompt string) error {
 	t.execMu.Lock()
-	defer t.execMu.Unlock()
 	saved := t.snapshotInput()
 
 	// Drain any stale user-input signal so the select below only reacts to
@@ -117,28 +119,35 @@ func (t *PTYTerminal) execPrompt(prompt string) error {
 		}
 	}
 
-	// First attempt: send paste + submit key + reinject together.
-	// The submit key may be processed before the paste is fully rendered,
-	// so we send a second one after a delay as a guaranteed delivery.
+	// First attempt: paste + submit key + reinject in one write.
 	payload := buildExecPayload(prompt, t.submitKey, saved)
-	if err := t.write(payload); err != nil {
+	err := t.write(payload)
+	t.execMu.Unlock() // release before sleeping — do not block concurrent callers
+	if err != nil {
 		return err
 	}
 
-	// Wait up to 100ms then re-send the submit key.
-	// Skip if the human types during the window — they are at the keyboard
-	// and will submit themselves.
+	// Wait up to 100ms outside the lock, then re-send the submit key.
+	// Skip if the human types during the window.
 	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
+
+	var skip bool
 	if t.userInputCh != nil {
 		select {
 		case <-timer.C:
-			return t.write(submitSeq(t.submitKey))
 		case <-t.userInputCh:
-			return nil
+			skip = true
 		}
+	} else {
+		<-timer.C
 	}
-	<-timer.C
+	if skip {
+		return nil
+	}
+
+	t.execMu.Lock()
+	defer t.execMu.Unlock()
 	return t.write(submitSeq(t.submitKey))
 }
 
