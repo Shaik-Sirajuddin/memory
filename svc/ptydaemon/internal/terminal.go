@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Status string
@@ -101,10 +102,20 @@ func (t *PTYTerminal) execPrompt(prompt string) error {
 	t.execMu.Lock()
 	defer t.execMu.Unlock()
 	saved := t.snapshotInput()
-	// Append reinject to payload in a single write (edge case #3: no gap between
-	// payload and reinject bytes, t.mu held for the entire sequence).
-	payload := buildExecPayload(prompt, t.submitKey, saved)
-	return t.write(payload)
+
+	// Write the bracketed-paste content first.
+	paste := []byte(ctrlU + pasteStart + prompt + pasteEnd)
+	if err := t.write(paste); err != nil {
+		return err
+	}
+
+	// Brief delay before the submit key so the terminal has time to finish
+	// processing the paste before the key fires. Temporary workaround.
+	time.Sleep(100 * time.Millisecond)
+
+	// Write submit key + reinject atomically in one call.
+	submit := append(submitSeq(t.submitKey), saved...)
+	return t.write(submit)
 }
 
 func (t *PTYTerminal) setStatus(s Status) {
