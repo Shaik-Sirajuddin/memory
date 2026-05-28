@@ -9,7 +9,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
+const createTableSQL = `
 CREATE TABLE IF NOT EXISTS pty_sessions (
     agent_id    TEXT     NOT NULL,
     session_id  TEXT     NOT NULL,
@@ -21,9 +21,18 @@ CREATE TABLE IF NOT EXISTS pty_sessions (
     PRIMARY KEY (agent_id, session_id)
 );`
 
-const migrations = `
-ALTER TABLE pty_sessions ADD COLUMN submit_key TEXT NOT NULL DEFAULT '';
-`
+const createVersionTableSQL = `
+CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);`
+
+// schemaMigrations is the ordered list of schema migrations. Each entry is
+// applied exactly once, tracked by its version number in schema_version.
+// SQL files under migrations/ are reference copies of the same statements.
+var schemaMigrations = []struct {
+	version int
+	sql     string
+}{
+	{1, `ALTER TABLE pty_sessions ADD COLUMN submit_key TEXT NOT NULL DEFAULT ''`},
+}
 
 type Store struct {
 	db *sql.DB
@@ -34,14 +43,41 @@ func NewStore(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(createTableSQL); err != nil {
 		db.Close()
 		return nil, err
 	}
-	// Best-effort: add submit_key column to existing databases.
-	// Fails silently on fresh databases where the column already exists.
-	_, _ = db.Exec(migrations)
+	if err := applyMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store migrations: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// applyMigrations creates the schema_version table if needed and runs any
+// migrations whose version number exceeds the current maximum.
+func applyMigrations(db *sql.DB) error {
+	if _, err := db.Exec(createVersionTableSQL); err != nil {
+		return fmt.Errorf("create schema_version: %w", err)
+	}
+
+	var current int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&current); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	for _, m := range schemaMigrations {
+		if m.version <= current {
+			continue
+		}
+		if _, err := db.Exec(m.sql); err != nil {
+			return fmt.Errorf("migration v%d: %w", m.version, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, m.version); err != nil {
+			return fmt.Errorf("record migration v%d: %w", m.version, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Insert(info *PTYTerminalInfo, submitKey string) error {

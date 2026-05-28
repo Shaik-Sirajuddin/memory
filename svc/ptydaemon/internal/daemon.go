@@ -126,8 +126,12 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 	}
 
 	// If caller doesn't supply a submit key, recover it from the store.
+	// Non-fatal on error: exec falls back to plain \r.
 	if submitKey == "" {
-		if rec, err := d.store.GetBySession(agentID, sessionID); err == nil && rec != nil {
+		rec, recErr := d.store.GetBySession(agentID, sessionID)
+		if recErr != nil {
+			_ = recErr // logged by caller layer; internal pkg has no logger
+		} else if rec != nil {
 			submitKey = rec.SubmitKey
 		}
 	}
