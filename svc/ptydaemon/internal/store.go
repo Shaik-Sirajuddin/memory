@@ -9,16 +9,30 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
+const createTableSQL = `
 CREATE TABLE IF NOT EXISTS pty_sessions (
     agent_id    TEXT     NOT NULL,
     session_id  TEXT     NOT NULL,
     pid         INTEGER  NOT NULL,
     status      TEXT     NOT NULL DEFAULT 'active',
+    submit_key  TEXT     NOT NULL DEFAULT '',
     started_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     stopped_at  DATETIME,
     PRIMARY KEY (agent_id, session_id)
 );`
+
+const createVersionTableSQL = `
+CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);`
+
+// schemaMigrations is the ordered list of schema migrations. Each entry is
+// applied exactly once, tracked by its version number in schema_version.
+// SQL files under migrations/ are reference copies of the same statements.
+var schemaMigrations = []struct {
+	version int
+	sql     string
+}{
+	{1, `ALTER TABLE pty_sessions ADD COLUMN submit_key TEXT NOT NULL DEFAULT ''`},
+}
 
 type Store struct {
 	db *sql.DB
@@ -29,17 +43,47 @@ func NewStore(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(createTableSQL); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := applyMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store migrations: %w", err)
 	}
 	return &Store{db: db}, nil
 }
 
-func (s *Store) Insert(info *PTYTerminalInfo) error {
+// applyMigrations creates the schema_version table if needed and runs any
+// migrations whose version number exceeds the current maximum.
+func applyMigrations(db *sql.DB) error {
+	if _, err := db.Exec(createVersionTableSQL); err != nil {
+		return fmt.Errorf("create schema_version: %w", err)
+	}
+
+	var current int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&current); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	for _, m := range schemaMigrations {
+		if m.version <= current {
+			continue
+		}
+		if _, err := db.Exec(m.sql); err != nil {
+			return fmt.Errorf("migration v%d: %w", m.version, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, m.version); err != nil {
+			return fmt.Errorf("record migration v%d: %w", m.version, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) Insert(info *PTYTerminalInfo, submitKey string) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO pty_sessions (agent_id, session_id, pid, status) VALUES (?, ?, ?, ?)`,
-		info.AgentID, info.SessionID, info.PID, string(info.Status),
+		`INSERT OR REPLACE INTO pty_sessions (agent_id, session_id, pid, status, submit_key) VALUES (?, ?, ?, ?, ?)`,
+		info.AgentID, info.SessionID, info.PID, string(info.Status), submitKey,
 	)
 	return err
 }
@@ -83,13 +127,14 @@ type PTYSessionRecord struct {
 	SessionID string
 	PID       int
 	Status    Status
+	SubmitKey string
 	StartedAt time.Time
 	StoppedAt *time.Time
 }
 
 func (s *Store) GetBySessionOnly(sessionID string) (*PTYSessionRecord, error) {
 	row := s.db.QueryRow(
-		`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions WHERE session_id = ? LIMIT 1`,
+		`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions WHERE session_id = ? LIMIT 1`,
 		sessionID,
 	)
 	return scanRecord(row.Scan)
@@ -97,7 +142,7 @@ func (s *Store) GetBySessionOnly(sessionID string) (*PTYSessionRecord, error) {
 
 func (s *Store) GetBySession(agentID, sessionID string) (*PTYSessionRecord, error) {
 	row := s.db.QueryRow(
-		`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? AND session_id = ?`,
+		`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? AND session_id = ?`,
 		agentID, sessionID,
 	)
 	return scanRecord(row.Scan)
@@ -110,11 +155,11 @@ func (s *Store) ListByAgent(agentID string) ([]*PTYSessionRecord, error) {
 	)
 	if agentID == "" {
 		rows, err = s.db.Query(
-			`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions ORDER BY started_at DESC`,
+			`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions ORDER BY started_at DESC`,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT agent_id, session_id, pid, status, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? ORDER BY started_at DESC`,
+			`SELECT agent_id, session_id, pid, status, submit_key, started_at, stopped_at FROM pty_sessions WHERE agent_id = ? ORDER BY started_at DESC`,
 			agentID,
 		)
 	}
@@ -155,7 +200,7 @@ func scanRecord(scan func(...any) error) (*PTYSessionRecord, error) {
 		startedAt string
 		stoppedAt sql.NullString
 	)
-	if err := scan(&rec.AgentID, &rec.SessionID, &rec.PID, &status, &startedAt, &stoppedAt); err != nil {
+	if err := scan(&rec.AgentID, &rec.SessionID, &rec.PID, &status, &rec.SubmitKey, &startedAt, &stoppedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}

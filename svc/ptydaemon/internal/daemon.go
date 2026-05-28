@@ -90,7 +90,7 @@ func (d *defaultDaemon) Create(p PTYCreateParams) (*PTYTerminalInfo, error) {
 	d.terminals[key] = t
 	d.mu.Unlock()
 
-	if err := d.store.Insert(&info); err != nil {
+	if err := d.store.Insert(&info, p.SubmitKey); err != nil {
 		return nil, fmt.Errorf("store insert: %w", err)
 	}
 
@@ -125,6 +125,17 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 		return nil // idempotent
 	}
 
+	// If caller doesn't supply a submit key, recover it from the store.
+	// Non-fatal on error: exec falls back to plain \r.
+	if submitKey == "" {
+		rec, recErr := d.store.GetBySession(agentID, sessionID)
+		if recErr != nil {
+			_ = recErr // logged by caller layer; internal pkg has no logger
+		} else if rec != nil {
+			submitKey = rec.SubmitKey
+		}
+	}
+
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("find process %d: %w", pid, err)
@@ -154,7 +165,7 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 	d.terminals[key] = t
 	d.mu.Unlock()
 
-	if err := d.store.Insert(&info); err != nil {
+	if err := d.store.Insert(&info, submitKey); err != nil {
 		return fmt.Errorf("store insert: %w", err)
 	}
 
