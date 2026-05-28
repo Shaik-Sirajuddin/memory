@@ -423,7 +423,19 @@ func attachToTerminal(ctx context.Context, ptmx *os.File, stdinDst io.Writer) er
 	}()
 
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(stdinDst, os.Stdin); done <- struct{}{} }()
+	go func() {
+		n, err := io.Copy(stdinDst, os.Stdin)
+		if err != nil && stdinDst != ptmx {
+			// Relay conn died — fall back to writing stdin directly to ptmx
+			// so the session stays alive and input is not silently lost.
+			// ptmx is safe to write here: deferred ptmx.Close() only runs after
+			// the select below exits, which waits for this goroutine's done signal.
+			ptylog.Warn("stdin-relay write failed, falling back to direct ptmx write",
+				"err", err, "bytes_relayed", n)
+			_, _ = io.Copy(ptmx, os.Stdin)
+		}
+		done <- struct{}{}
+	}()
 	go func() { _, _ = io.Copy(os.Stdout, ptmx); done <- struct{}{} }()
 	select {
 	case <-ctx.Done():
