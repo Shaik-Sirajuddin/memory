@@ -64,7 +64,7 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 	a.mu.Unlock()
 
 	// Verify the codex binary is reachable by running `codex --version`.
-	out, err := captureOutputEnv(workDir, env, binPath, "--version")
+	out, err := captureOutput(workDir, env, binPath, "--version")
 	if err != nil {
 		return nil, fmt.Errorf("codex: create: binary unreachable: %w", err)
 	}
@@ -755,17 +755,14 @@ func wrapExitError(op string, err error) error {
 	return fmt.Errorf("%s: %w", op, err)
 }
 
-func captureOutput(dir, name string, args ...string) (string, error) {
+// captureOutput runs name with args from dir. env overrides the process
+// environment when non-nil; pass nil to inherit the current process env.
+func captureOutput(dir string, env []string, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	out, err := cmd.Output()
-	return string(out), err
-}
-
-func captureOutputEnv(dir string, env []string, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	cmd.Env = env
+	if env != nil {
+		cmd.Env = env
+	}
 	out, err := cmd.Output()
 	return string(out), err
 }
