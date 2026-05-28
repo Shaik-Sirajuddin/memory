@@ -206,6 +206,11 @@ func (d *defaultDaemon) Stop(agentID, sessionID string) error {
 		d.removeTerminal(agentID, sessionID)
 		return nil
 	}
+	// Remove from the in-memory map immediately so a concurrent Create for the
+	// same session does not race against watchTerminal's async removal.
+	// watchTerminal will call removeTerminal again after cmd.Wait() — that is a
+	// no-op since the key is already gone.
+	d.removeTerminal(t.AgentID, t.SessionID)
 	return t.kill()
 }
 
