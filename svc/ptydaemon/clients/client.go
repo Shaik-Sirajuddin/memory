@@ -17,6 +17,8 @@ type Client interface {
 	Attach(ctx context.Context, sessionID string) error
 	Exec(sessionID, input string) error
 	Stop(sessionID string) error
+	StopSafe(sessionID string, force bool) error
+	Detach(sessionID string) error
 	Register(agentID, sessionID, processID string) error
 
 	// List returns all known PTY sessions, optionally filtered by agentID.

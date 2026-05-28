@@ -15,6 +15,11 @@ type Request struct {
 	Data      []byte   `json:"data,omitempty"`
 	Prompt    string   `json:"prompt,omitempty"`
 	PID       int      `json:"pid,omitempty"`
+	// Safe and Force apply to the stop op.
+	// Safe=true enables the attachment check; Force=true overrides it.
+	// Omitting both preserves the original unconditional-kill behaviour.
+	Safe  bool `json:"safe,omitempty"`
+	Force bool `json:"force,omitempty"`
 }
 
 // Response is the JSON envelope returned to clients.

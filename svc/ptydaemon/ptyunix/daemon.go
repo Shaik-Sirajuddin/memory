@@ -105,6 +105,8 @@ func (d *Daemon) handleConn(conn *net.UnixConn) {
 		d.handleAdopt(conn, req)
 	case "attach":
 		d.handleAttach(conn, req)
+	case "detach":
+		d.handleDetach(conn, req)
 	case "pipe":
 		d.handlePipe(conn, req)
 	case "exec":
@@ -273,6 +275,14 @@ func (d *Daemon) handleAttach(conn *net.UnixConn, req Request) {
 	ptylog.Info("fd granted to client", "session_id", req.SessionID, "client_pid", clientPID)
 }
 
+// handleDetach clears the attachment record for a session so the next caller
+// can attach without waiting for the previous client's process to be reaped.
+func (d *Daemon) handleDetach(conn *net.UnixConn, req Request) {
+	ptylog.Debug("detach", "session_id", req.SessionID)
+	d.attachedPIDs.Delete(req.SessionID)
+	respond(conn, Response{OK: true})
+}
+
 // handlePipe writes raw bytes to the PTY master.
 func (d *Daemon) handlePipe(conn *net.UnixConn, req Request) {
 	if d.inner == nil {
@@ -362,7 +372,23 @@ func (d *Daemon) handleKeybind(conn *net.UnixConn, req Request) {
 }
 
 func (d *Daemon) handleStop(conn *net.UnixConn, req Request) {
-	ptylog.Debug("stop", "agent_id", req.AgentID, "session_id", req.SessionID)
+	ptylog.Debug("stop", "agent_id", req.AgentID, "session_id", req.SessionID, "safe", req.Safe, "force", req.Force)
+
+	// Attachment check: only when the caller opts in via Safe=true.
+	// Omitting Safe preserves the original unconditional-kill behaviour.
+	if req.Safe {
+		if pid, ok := d.attachedPIDs.Load(req.SessionID); ok {
+			p := pid.(int)
+			if processExists(p) {
+				if !req.Force {
+					respond(conn, Response{Error: fmt.Sprintf("session is attached (pid %d); use force to override", p)})
+					return
+				}
+				ptylog.Info("force-stopping attached session", "session_id", req.SessionID, "attached_pid", p)
+			}
+			d.attachedPIDs.Delete(req.SessionID)
+		}
+	}
 
 	if d.inner != nil {
 		if err := d.inner.Stop(req.AgentID, req.SessionID); err != nil {

@@ -37,6 +37,8 @@ type unixRequest struct {
 	Data      []byte   `json:"data,omitempty"`
 	PID       int      `json:"pid,omitempty"`
 	SubmitKey string   `json:"submit_key,omitempty"`
+	Safe      bool     `json:"safe,omitempty"`
+	Force     bool     `json:"force,omitempty"`
 }
 
 type unixResponse struct {
@@ -282,6 +284,32 @@ func (c *UnixSocketClient) Stop(sessionID string) error {
 		return err
 	}
 	ptylog.Debug("client: stop ok", "session_id", sessionID)
+	return nil
+}
+
+// StopSafe stops the session only if no client is currently attached.
+// Pass force=true to kill even when a client holds the PTY master fd.
+// Use Stop for the original unconditional-kill behaviour.
+func (c *UnixSocketClient) StopSafe(sessionID string, force bool) error {
+	ptylog.Debug("client: stop-safe", "session_id", sessionID, "force", force)
+	if err := c.do(unixRequest{Op: "stop", SessionID: sessionID, Safe: true, Force: force}); err != nil {
+		ptylog.Error("client: stop-safe failed", "err", err, "session_id", sessionID)
+		return err
+	}
+	ptylog.Debug("client: stop-safe ok", "session_id", sessionID)
+	return nil
+}
+
+// Detach explicitly clears the attachment record for the session, allowing the
+// next caller to attach immediately without waiting for the daemon to reap the
+// previous client's process entry.
+func (c *UnixSocketClient) Detach(sessionID string) error {
+	ptylog.Debug("client: detach", "session_id", sessionID)
+	if err := c.do(unixRequest{Op: "detach", SessionID: sessionID}); err != nil {
+		ptylog.Error("client: detach failed", "err", err, "session_id", sessionID)
+		return err
+	}
+	ptylog.Debug("client: detach ok", "session_id", sessionID)
 	return nil
 }
 

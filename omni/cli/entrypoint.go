@@ -205,6 +205,8 @@ func (c *DefaultCli) newAgentCommand() *cobra.Command {
 	agentCmd.AddCommand(c.newAgentSandboxCommand())
 	agentCmd.AddCommand(c.newAgentPipeCommand())
 	agentCmd.AddCommand(c.newAgentExecCommand())
+	agentCmd.AddCommand(c.newAgentStopCommand())
+	agentCmd.AddCommand(c.newAgentDetachCommand())
 
 	return agentCmd
 }
@@ -853,6 +855,7 @@ func (c *DefaultCli) newAgentExecCommand() *cobra.Command {
 				if err := c.operator.ResumeAgent(operator.ResumeAgentParams{
 					Name:      name,
 					SessionID: sessionID,
+					Detached:  true,
 				}); err != nil {
 					return err
 				}
@@ -873,6 +876,63 @@ func (c *DefaultCli) newAgentExecCommand() *cobra.Command {
 	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
 	cmd.Flags().BoolVarP(&resume, "resume", "r", false, "Resume agent before sending prompt")
 	_ = cmd.MarkFlagRequired("prompt")
+	return cmd
+}
+
+func (c *DefaultCli) newAgentStopCommand() *cobra.Command {
+	var sessionID string
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "stop <name>",
+		Short: "Stop an agent PTY session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c.operator == nil {
+				return errors.New("operator is required")
+			}
+			result, err := c.operator.StopSession(operator.StopSessionParams{
+				AgentID:   args[0],
+				SessionID: sessionID,
+				Force:     force,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "session stopped: %s\n", result.SessionID)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
+	cmd.Flags().BoolVar(&force, "force", false, "Stop even when a client is attached")
+	return cmd
+}
+
+func (c *DefaultCli) newAgentDetachCommand() *cobra.Command {
+	var sessionID string
+
+	cmd := &cobra.Command{
+		Use:   "detach <name>",
+		Short: "Detach an agent PTY session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c.operator == nil {
+				return errors.New("operator is required")
+			}
+			result, err := c.operator.DetachSession(operator.DetachSessionParams{
+				AgentID:   args[0],
+				SessionID: sessionID,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "session detached: %s\n", result.SessionID)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
 	return cmd
 }
 

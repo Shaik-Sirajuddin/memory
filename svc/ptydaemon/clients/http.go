@@ -65,6 +65,14 @@ func (c *httpClient) Stop(sessionID string) error {
 	return fmt.Errorf("ptydaemon/clients: http client does not support Stop (session %q)", sessionID)
 }
 
+func (c *httpClient) StopSafe(sessionID string, force bool) error {
+	return fmt.Errorf("ptydaemon/clients: http client does not support StopSafe (session %q, force %t)", sessionID, force)
+}
+
+func (c *httpClient) Detach(sessionID string) error {
+	return fmt.Errorf("ptydaemon/clients: http client does not support Detach (session %q)", sessionID)
+}
+
 func (c *httpClient) List(agentID string) ([]*PTYTerminalInfo, error) {
 	url := "http://ptydaemon/sessions"
 	if agentID != "" {
