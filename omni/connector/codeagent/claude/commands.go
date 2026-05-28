@@ -199,7 +199,7 @@ func (a *claudeAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		if started {
 			logger.Info("Resume: PTY daemon session started", "sessionID", resumeID)
 		} else {
-			logger.Info("Resume: attached to active PTY daemon session", "sessionID", resumeID)
+			logger.Info("Resume: reusing active PTY daemon session", "sessionID", resumeID)
 		}
 		if p.Detached {
 			logger.Info("Resume: leaving PTY daemon session detached", "sessionID", resumeID)
