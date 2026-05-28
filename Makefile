@@ -45,7 +45,7 @@ docker-build:
 	docker compose -f $(COMPOSE_FILE) build --build-arg VERSION=$(VERSION)
 
 docker-up:
-	docker compose -f $(COMPOSE_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) up -d --wait
 	docker compose -f $(COMPOSE_FILE) exec ubuntu bash -l
 
 docker-down:

@@ -357,12 +357,18 @@ func ListTemplateVersions() ([]string, error) {
 		}
 		data, err := templateFS.ReadFile("templates/agents/" + e.Name() + "/" + metadataFile)
 		if err != nil {
+			logger.Warn("ListTemplateVersions: skipping template with unreadable metadata", "template", e.Name(), "err", err)
 			continue
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "version:") {
-				if v := strings.TrimSpace(strings.TrimPrefix(line, "version:")); v != "" {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "version:"))
+				// strip inline YAML comments
+				if idx := strings.Index(v, "#"); idx >= 0 {
+					v = strings.TrimSpace(v[:idx])
+				}
+				if v != "" {
 					names = append(names, v)
 				}
 			}
