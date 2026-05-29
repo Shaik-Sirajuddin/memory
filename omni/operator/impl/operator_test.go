@@ -937,7 +937,7 @@ func (s *stubPTYDaemonClient) Pipe(agentID, sessionID string, data []byte) error
 	return nil
 }
 
-func (s *stubPTYDaemonClient) Start(string, []string, []string, string) error {
+func (s *stubPTYDaemonClient) Start(string, []string, []string, string, string) error {
 	return nil
 }
 

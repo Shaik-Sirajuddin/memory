@@ -3,7 +3,6 @@ package internal
 import (
 	"bytes"
 	"errors"
-	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -28,11 +27,21 @@ const (
 	csiUShiftEnter        = "\x1b[13;2u"
 	modifyOtherShiftEnter = "\x1b[27;2;13~"
 
-	maxInputBuf   = 4096
+	maxInputBuf = 4096
+	// inputQueueCap history slots + 1 active slot at index queueLen.
 	inputQueueCap = 2
 	// carrySize must cover the longest escape sequence we detect (7 bytes for CSI-u shift-enter).
 	carrySize = 8
+
+	// pasteSettle is the pause between clear, paste, and submit so the TUI
+	// applies each step in order. Without it the submit key races ahead of the
+	// bracketed paste and lands on stale human input.
+	pasteSettle = 40 * time.Millisecond
 )
+
+// submitRetryDelays are the delays before each bare resubmit of an already-pasted
+// prompt — used to push a prompt through when the TUI swallowed the first submit.
+var submitRetryDelays = []time.Duration{100 * time.Millisecond}
 
 type PTYCreateParams struct {
 	AgentID   string   `json:"agent_id"`
@@ -61,25 +70,23 @@ type PTYTerminal struct {
 	submitKey string
 	mu        sync.Mutex
 
-	// execMu serialises the snapshot→payload→reinject triple so concurrent
-	// ExecInSession calls cannot interleave their writes on the PTY master.
+	// execMu serialises concurrent ExecInSession calls so their writes on the
+	// PTY master cannot interleave.
 	execMu sync.Mutex
 
 	// humanMu guards the input tracking state below.
-	humanMu          sync.Mutex
-	currentInput     []byte
-	inputQueue       [inputQueueCap][]byte
+	humanMu sync.Mutex
+	// inputQueue[0..queueLen-1] = committed history (oldest→newest).
+	// inputQueue[queueLen]      = active top slot; trackHumanInput writes here directly.
+	// On enter: active slot becomes history (queueLen++, drop oldest if full), new active = nil.
+	// Bot reads inputQueue[queueLen] (active top) via readLastInput — no pop.
+	inputQueue       [inputQueueCap + 1][]byte
 	queueLen         int
 	inBracketedPaste bool
 	// carry holds the tail of the last relay chunk to detect escape sequences
-	// that span two consecutive reads (edge case #1 in the plan).
+	// that span two consecutive reads.
 	carry  [carrySize]byte
 	carryN int
-
-	// userInputCh is signalled (non-blocking) by trackHumanInput whenever the
-	// relay receives a chunk from the human. execPrompt drains it before
-	// writing, then waits on it during the submit-key delay.
-	userInputCh chan struct{}
 }
 
 func (t *PTYTerminal) write(p []byte) error {
@@ -102,66 +109,93 @@ func (t *PTYTerminal) kill() error {
 	return nil
 }
 
-// execPrompt serialises the paste write under execMu, then releases the lock
-// before each sleep so concurrent ExecInSession callers are not forced to wait.
-// The submit key is sent up to three times (immediate + two retries at 100ms
-// intervals) to handle terminals that process the paste before the key fires.
-// Each retry is skipped if the human types during the wait window.
-func (t *PTYTerminal) execPrompt(prompt string) error {
-	t.execMu.Lock()
-	saved := t.snapshotInput()
-
-	// Drain any stale user-input signal so retries only react to input that
-	// arrives after this exec started.
-	if t.userInputCh != nil {
-		select {
-		case <-t.userInputCh:
-		default:
-		}
+// readLastInput returns a full copy of the active queue top (inputQueue[queueLen]).
+// This is what the human is currently typing — never pops, never clears.
+func (t *PTYTerminal) readLastInput() []byte {
+	t.humanMu.Lock()
+	defer t.humanMu.Unlock()
+	active := t.inputQueue[t.queueLen]
+	if len(active) == 0 {
+		return nil
 	}
+	return append([]byte(nil), active...)
+}
 
-	// Attempt 1: paste + submit key + reinject in one write.
-	payload := buildExecPayload(prompt, t.submitKey, saved)
-	err := t.write(payload)
-	t.execMu.Unlock()
-	if err != nil {
+// execPrompt sends a bot prompt while preserving the human's partial input.
+// Each step is a separate PTY write so the TUI applies them in order — a single
+// concatenated write lets the submit key race ahead of the paste and submit
+// stale human input instead of the prompt.
+//
+//	1. ctrlU                          clear the human's partial line
+//	2. paste(prompt)                  bracketed-paste the prompt (no submit yet)
+//	3. submitKey [+ retries]          submit; bare resubmit if the TUI swallowed it
+//	4. human input (once, no submit)  restore what the human was typing
+//
+// execMu is held across the whole sequence (including the settle/retry sleeps)
+// so concurrent exec calls cannot interleave their writes.
+func (t *PTYTerminal) execPrompt(prompt string) error {
+	// Snapshot the human's partial input up front; restored at the end. Never pops.
+	human := t.readLastInput()
+
+	t.execMu.Lock()
+	defer t.execMu.Unlock()
+
+	// 1. Clear the human's partial line, then let the TUI apply it before we
+	//    paste — otherwise the clear races behind the paste/submit.
+	if err := t.write([]byte(ctrlU)); err != nil {
 		return err
 	}
+	time.Sleep(pasteSettle)
 
-	submitKey := submitSeq(t.submitKey)
-	retryDelays := []time.Duration{1 * time.Second, 2 * time.Second, 3 * time.Second}
+	// 2. Bracketed-paste the prompt as its own write and let it settle. The
+	//    submit must not share this write or it races the paste.
+	if err := t.write([]byte(pasteStart + prompt + pasteEnd)); err != nil {
+		return err
+	}
+	time.Sleep(pasteSettle)
 
-	for i, delay := range retryDelays {
-		attempt := i + 2
-		if userInputArrived(t.userInputCh, delay) {
-			return nil
-		}
-		t.execMu.Lock()
-		werr := t.write(submitKey)
-		t.execMu.Unlock()
-		slog.Debug("ptydaemon: submit-key retry", "attempt", attempt, "session_id", t.SessionID, "err", werr)
+	// 3. Submit. Retries send the bare submit key only (no ctrlU) so a prompt
+	//    still sitting in the buffer is pushed through rather than wiped.
+	submit := submitSeq(t.submitKey)
+	if err := t.write(submit); err != nil {
+		return err
+	}
+	for i, delay := range submitRetryDelays {
+		time.Sleep(delay)
+		werr := t.write(submit)
+		ptylog.Debug("ptydaemon: submit-key retry", "attempt", i+2, "session_id", t.SessionID, "submit_key", t.submitKey, "err", werr)
 		if werr != nil {
 			return werr
+		}
+	}
+
+	// 4. Restore the human's partial input (no submit) so they see it again.
+	if len(human) > 0 {
+		if err := t.write(human); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// userInputArrived waits up to d for a signal on ch.
-// Returns true if the human typed during the window, false if the timer fired.
-func userInputArrived(ch chan struct{}, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	if ch == nil {
-		<-timer.C
-		return false
+// retrySubmitKey sends only the bare submit key at fixed intervals.
+// Used by the pipe/connector path (handleExec) where the connector already
+// pre-formats the full payload — no ctrlU, no reinject.
+func (t *PTYTerminal) retrySubmitKey() error {
+	submitKey := submitSeq(t.submitKey)
+	retryDelays := []time.Duration{100 * time.Millisecond}
+	for i, delay := range retryDelays {
+		attempt := i + 2
+		time.Sleep(delay)
+		t.execMu.Lock()
+		werr := t.write(submitKey)
+		t.execMu.Unlock()
+		ptylog.Debug("ptydaemon: submit-key retry", "attempt", attempt, "session_id", t.SessionID, "submit_key", t.submitKey, "err", werr)
+		if werr != nil {
+			return werr
+		}
 	}
-	select {
-	case <-timer.C:
-		return false
-	case <-ch:
-		return true
-	}
+	return nil
 }
 
 func (t *PTYTerminal) setStatus(s Status) {
@@ -171,17 +205,9 @@ func (t *PTYTerminal) setStatus(s Status) {
 }
 
 // trackHumanInput is called by the stdin relay before forwarding each chunk
-// to the PTY master. It maintains currentInput and pops the queue when the
-// human submits or clears the line.
+// to the PTY master. It maintains currentInput — the always-live active buffer
+// the bot reads to reinject human input after sending a prompt.
 func (t *PTYTerminal) trackHumanInput(chunk []byte) {
-	// Signal execPrompt that the human is at the keyboard.
-	if t.userInputCh != nil {
-		select {
-		case t.userInputCh <- struct{}{}:
-		default:
-		}
-	}
-
 	t.humanMu.Lock()
 	defer t.humanMu.Unlock()
 
@@ -205,8 +231,18 @@ func (t *PTYTerminal) trackHumanInput(chunk []byte) {
 	}
 
 	if !t.inBracketedPaste && isSubmitOrClear(buf) {
-		t.popQueueLocked()
-		t.currentInput = nil
+		// Commit active slot (inputQueue[queueLen]) to history by advancing queueLen.
+		// Drop oldest history entry if at capacity.
+		if len(t.inputQueue[t.queueLen]) > 0 {
+			if t.queueLen == inputQueueCap {
+				copy(t.inputQueue[:], t.inputQueue[1:])
+				t.inputQueue[inputQueueCap] = nil
+			} else {
+				t.queueLen++
+			}
+		}
+		// New active slot is now inputQueue[queueLen] — start fresh.
+		t.inputQueue[t.queueLen] = nil
 		return
 	}
 
@@ -218,40 +254,11 @@ func (t *PTYTerminal) trackHumanInput(chunk []byte) {
 	copy(t.carry[:], buf[len(buf)-n:])
 	t.carryN = n
 
-	t.currentInput = append(t.currentInput, chunk...)
-	if len(t.currentInput) > maxInputBuf {
-		t.currentInput = t.currentInput[len(t.currentInput)-maxInputBuf:]
+	// Write directly into the active queue top slot.
+	t.inputQueue[t.queueLen] = append(t.inputQueue[t.queueLen], chunk...)
+	if len(t.inputQueue[t.queueLen]) > maxInputBuf {
+		t.inputQueue[t.queueLen] = t.inputQueue[t.queueLen][len(t.inputQueue[t.queueLen])-maxInputBuf:]
 	}
-}
-
-// snapshotInput saves the current partial input to the queue and returns it.
-// Returns nil when the human has not typed anything since the last snapshot.
-func (t *PTYTerminal) snapshotInput() []byte {
-	t.humanMu.Lock()
-	defer t.humanMu.Unlock()
-	if len(t.currentInput) == 0 {
-		return nil
-	}
-	snap := append([]byte(nil), t.currentInput...)
-	// Drop oldest entry when queue is full (queue overflow, edge case #4).
-	if t.queueLen == inputQueueCap {
-		copy(t.inputQueue[:], t.inputQueue[1:])
-		t.inputQueue[inputQueueCap-1] = nil // release the old slice (minor: prevents GC leak)
-		t.queueLen--
-	}
-	t.inputQueue[t.queueLen] = snap
-	t.queueLen++
-	t.currentInput = nil
-	return snap
-}
-
-func (t *PTYTerminal) popQueueLocked() {
-	if t.queueLen == 0 {
-		return
-	}
-	copy(t.inputQueue[:], t.inputQueue[1:])
-	t.inputQueue[t.queueLen-1] = nil // release the now-unused tail slot
-	t.queueLen--
 }
 
 // isSubmitOrClear returns true when b contains a line-submit or clear-line
@@ -261,18 +268,6 @@ func isSubmitOrClear(b []byte) bool {
 	return strings.ContainsAny(s, "\r\x15") ||
 		strings.Contains(s, csiUShiftEnter) ||
 		strings.Contains(s, modifyOtherShiftEnter)
-}
-
-// buildExecPayload assembles the bracketed-paste sequence and appends reinject
-// bytes in a single allocation so they are written atomically in one t.write()
-// call (edge case #3: no window between payload and reinject).
-func buildExecPayload(prompt, submitKey string, reinject []byte) []byte {
-	seq := ctrlU + pasteStart + prompt + pasteEnd
-	result := append([]byte(seq), submitSeq(submitKey)...)
-	if len(reinject) > 0 {
-		result = append(result, reinject...)
-	}
-	return result
 }
 
 func submitSeq(name string) []byte {

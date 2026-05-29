@@ -332,7 +332,7 @@ func (a *codexAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeS
 		command := append([]string{binPath}, args...)
 		started := false
 		if info == nil || info.Status != "active" {
-			if err := ptyClient.Start(resolvedSessionID, command, env, workDir); err != nil {
+			if err := ptyClient.Start(resolvedSessionID, command, env, workDir, submitKey); err != nil {
 				return nil, fmt.Errorf("codex: resume: pty start: %w", err)
 			}
 			started = true

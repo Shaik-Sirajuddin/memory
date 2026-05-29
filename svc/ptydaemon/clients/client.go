@@ -13,7 +13,8 @@ type Client interface {
 	// Start spawns a new PTY session for the given command.
 	// env is forwarded so the daemon can exec user-installed binaries.
 	// dir sets the working directory; empty string inherits the daemon's cwd.
-	Start(sessionID string, command []string, env []string, dir string) error
+	// submitKey is the key sequence used to submit prompts (stored by the daemon for exec retries).
+	Start(sessionID string, command []string, env []string, dir, submitKey string) error
 	Attach(ctx context.Context, sessionID string) error
 	Exec(sessionID, input string) error
 	Stop(sessionID string) error
