@@ -368,6 +368,9 @@ func (s *Service) buildMessage(ctx context.Context, sender SenderSpec, payload P
 	if err != nil {
 		return nil, BadRequest(err.Error())
 	}
+	if to == sender.ID {
+		return nil, BadRequest("cannot send message to self")
+	}
 	if strings.TrimSpace(payload.Prompt) == "" {
 		return nil, BadRequest("prompt is required")
 	}
