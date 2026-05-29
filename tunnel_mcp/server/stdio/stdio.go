@@ -159,7 +159,7 @@ func encodeBridgeError(err error) []byte {
 }
 
 func defaultUnixSocketPath() string {
-	return filepath.Join("/run", "omni-"+currentUsername(), "mcp.sock")
+	return filepath.Join("/run", "omni-"+currentUsername(), "service.sock")
 }
 
 func currentUsername() string {
