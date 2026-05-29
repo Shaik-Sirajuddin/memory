@@ -16,7 +16,7 @@ fix_claude_binary
 install_and_setup() {
   echo "==> install_phase"
   # shellcheck source=deployment/setup.sh
-  source "$WORKSPACE/deployment/setup.sh"
+  OMNI_GLOBAL_INSTALL=1 source "$WORKSPACE/deployment/setup.sh"
   # binaries are already at /opt/omni/bin from image build — skip install_binaries
   link_binaries
   write_service
