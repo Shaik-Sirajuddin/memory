@@ -9,6 +9,7 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
+	"gopkg.in/yaml.v3"
 )
 
 // ============================================================
@@ -180,6 +181,113 @@ func entryToHookData(e codexHookEntry, path hooks.HookPath) *hooks.HookData {
 			Timeout: e.Timeout,
 			Url:     e.Url,
 		},
+	}
+}
+
+// ============================================================
+// config.yaml — Codex native hook configuration
+//
+// Hooks are registered in ~/.codex/config.yaml (separate from the
+// model/sandbox settings in config.toml). The format matches the
+// hooks-config.schema.json bundled in codex/hooks/.
+// ============================================================
+
+// codexConfigYAML mirrors the hooks section of ~/.codex/config.yaml.
+type codexConfigYAML struct {
+	Hooks map[string][]codexHookMatcher `yaml:"hooks,omitempty"`
+}
+
+// codexHookMatcher is one entry under a hook event key.
+// Matcher is an optional regex; omitting it matches every invocation.
+type codexHookMatcher struct {
+	Matcher string          `yaml:"matcher,omitempty"`
+	Hooks   []codexHookDef `yaml:"hooks"`
+}
+
+// codexHookDef is a single hook command entry.
+type codexHookDef struct {
+	Type    string `yaml:"type"`            // always "command"
+	Command string `yaml:"command"`
+	Timeout int    `yaml:"timeout,omitempty"`
+}
+
+// globalConfigYAMLPath returns ~/.codex/config.yaml.
+func globalConfigYAMLPath() (string, error) {
+	dir, err := globalCodexDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.yaml"), nil
+}
+
+func readConfigYAML(path string) (codexConfigYAML, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return codexConfigYAML{}, nil
+	}
+	if err != nil {
+		return codexConfigYAML{}, fmt.Errorf("codex: read config.yaml: %w", err)
+	}
+	var cfg codexConfigYAML
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return codexConfigYAML{}, fmt.Errorf("codex: parse config.yaml: %w", err)
+	}
+	return cfg, nil
+}
+
+func writeConfigYAML(path string, cfg codexConfigYAML) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("codex: mkdir config.yaml dir: %w", err)
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("codex: marshal config.yaml: %w", err)
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// ============================================================
+// Event name mapping — omni ↔ Codex CLI
+//
+// Codex CLI fires five hook events; omni uses different names for two:
+//   omni SessionEnd  → Codex "Stop"
+//   omni PrePrompt   → Codex "UserPromptSubmit"
+//
+// PostToolUseFailure and PostPrompt have no Codex equivalent and are
+// silently skipped when registering hooks.
+// ============================================================
+
+func codexEventName(omniEvent string) (string, bool) {
+	switch omniEvent {
+	case string(hooks.PreToolUse):
+		return "PreToolUse", true
+	case string(hooks.PostToolUse):
+		return "PostToolUse", true
+	case string(hooks.SessionStart):
+		return "SessionStart", true
+	case string(hooks.SessionEnd):
+		return "Stop", true
+	case string(hooks.PrePrompt):
+		return "UserPromptSubmit", true
+	default:
+		return "", false
+	}
+}
+
+func omniEventFromCodex(codexEvent string) (string, bool) {
+	switch codexEvent {
+	case "PreToolUse":
+		return string(hooks.PreToolUse), true
+	case "PostToolUse":
+		return string(hooks.PostToolUse), true
+	case "SessionStart":
+		return string(hooks.SessionStart), true
+	case "Stop":
+		return string(hooks.SessionEnd), true
+	case "UserPromptSubmit":
+		return string(hooks.PrePrompt), true
+	default:
+		return "", false
 	}
 }
 
