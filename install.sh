@@ -58,18 +58,32 @@ download_and_install() {
 
   # goreleaser archives are flat (no wrapping subdir); setup.sh is at deployment/setup.sh
   echo "==> running setup"
-  if [[ "${OMNI_GLOBAL_INSTALL:-0}" == "1" ]]; then
-    # explicit system-wide install — requires root or passwordless sudo
+
+  local can_global=0
+  if [[ "$EUID" -eq 0 ]] || sudo -n true 2>/dev/null || sudo -n -l 2>/dev/null | grep -q "NOPASSWD"; then
+    can_global=1
+  fi
+
+  local do_global="${OMNI_GLOBAL_INSTALL:-}"
+  if [[ -z "$do_global" && "$can_global" == "1" ]]; then
+    # root/sudo detected — ask user which mode they want
+    echo ""
+    echo "  Root/sudo access detected. Choose install mode:"
+    echo "    [1] User-local  — ~/.local/opt/omni  (default, no system changes)"
+    echo "    [2] System-wide — /opt/omni           (installs for all users, requires root)"
+    echo ""
+    local choice
+    read -r -p "  Enter choice [1]: " choice </dev/tty || choice="1"
+    [[ "$choice" == "2" ]] && do_global="1" || do_global="0"
+  fi
+
+  if [[ "${do_global:-0}" == "1" ]]; then
     if [[ "$EUID" -eq 0 ]]; then
       BIN_DIR="$tmp_dir" OMNI_GLOBAL_INSTALL=1 bash "$tmp_dir/deployment/setup.sh"
-    elif sudo -n true 2>/dev/null || sudo -n -l 2>/dev/null | grep -q "NOPASSWD"; then
-      sudo BIN_DIR="$tmp_dir" OMNI_GLOBAL_INSTALL=1 bash "$tmp_dir/deployment/setup.sh"
     else
-      echo "error: OMNI_GLOBAL_INSTALL=1 requires root or passwordless sudo" >&2
-      exit 1
+      sudo BIN_DIR="$tmp_dir" OMNI_GLOBAL_INSTALL=1 bash "$tmp_dir/deployment/setup.sh"
     fi
   else
-    # default: user-local install under ~/.local (no root required)
     BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
   fi
 }
