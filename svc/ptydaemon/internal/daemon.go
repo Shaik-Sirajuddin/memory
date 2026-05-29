@@ -102,7 +102,6 @@ func (d *defaultDaemon) Create(p PTYCreateParams) (*PTYTerminalInfo, error) {
 		master:          master,
 		cmd:             cmd,
 		submitKey:       p.SubmitKey,
-		userInputCh:     make(chan struct{}, 1),
 	}
 
 	d.mu.Lock()
@@ -178,7 +177,6 @@ func (d *defaultDaemon) Adopt(agentID, sessionID string, pid int, submitKey stri
 		cmd:             nil,
 		proc:            proc,
 		submitKey:       submitKey,
-		userInputCh:     make(chan struct{}, 1),
 	}
 
 	d.mu.Lock()
@@ -271,8 +269,9 @@ func (d *defaultDaemon) removeTerminal(agentID, sessionID string) {
 	d.mu.Unlock()
 }
 
-// StdinRelay reads from r in a loop, calling trackHumanInput and write on
-// each chunk so that ExecInSession can serialise around human input.
+// StdinRelay reads from r in a loop, writing each chunk to the PTY first,
+// then tracking it in the input queue — so the queue only contains what was
+// successfully written.
 func (d *defaultDaemon) StdinRelay(ctx context.Context, agentID, sessionID string, r io.Reader) error {
 	t := d.get(agentID, sessionID)
 	if t == nil {
@@ -289,10 +288,10 @@ func (d *defaultDaemon) StdinRelay(ctx context.Context, agentID, sessionID strin
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
-			t.trackHumanInput(chunk)
 			if werr := t.write(chunk); werr != nil {
 				return werr
 			}
+			t.trackHumanInput(chunk)
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {

@@ -49,7 +49,7 @@ func (c *httpClient) Pipe(agentID, sessionID string, data []byte) error {
 	return c.post("http://ptydaemon/pipe", body)
 }
 
-func (c *httpClient) Start(sessionID string, command []string, _ []string, _ string) error {
+func (c *httpClient) Start(sessionID string, command []string, _ []string, _, _ string) error {
 	return fmt.Errorf("ptydaemon/clients: http client does not support Start (session %q)", sessionID)
 }
 

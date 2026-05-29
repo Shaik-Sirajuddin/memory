@@ -146,7 +146,7 @@ func (c *UnixSocketClient) Get(_, sessionID string) (*PTYTerminalInfo, error) {
 // It resolves command[0] to an absolute path via exec.LookPath so the daemon
 // can exec binaries installed in the caller's PATH.
 // dir sets the working directory for the spawned process; empty means inherit daemon cwd.
-func (c *UnixSocketClient) Start(sessionID string, command []string, env []string, dir string) error {
+func (c *UnixSocketClient) Start(sessionID string, command []string, env []string, dir, submitKey string) error {
 	ptylog.Debug("client: start", "session_id", sessionID, "command", command, "dir", dir)
 	if len(command) > 0 {
 		original := command[0]
@@ -157,7 +157,7 @@ func (c *UnixSocketClient) Start(sessionID string, command []string, env []strin
 			ptylog.Debug("client: start LookPath failed, using original", "command", original, "err", err)
 		}
 	}
-	if err := c.do(unixRequest{Op: "start", SessionID: sessionID, Command: command, Env: env, Dir: dir}); err != nil {
+	if err := c.do(unixRequest{Op: "start", SessionID: sessionID, Command: command, Env: env, Dir: dir, SubmitKey: submitKey}); err != nil {
 		ptylog.Error("client: start failed", "err", err, "session_id", sessionID, "command", command)
 		return err
 	}
@@ -302,7 +302,7 @@ func (c *UnixSocketClient) MetaAttached(sessionID string) (int, error) {
 	return resp.Count, nil
 }
 
-// Exec writes raw input bytes to the PTY master.
+// Exec sends a pre-formatted payload to the PTY master. The daemon pipes it as-is and adds submit-key retries.
 func (c *UnixSocketClient) Exec(sessionID, input string) error {
 	ptylog.Debug("client: exec", "session_id", sessionID, "input_len", len(input))
 	if err := c.do(unixRequest{Op: "exec", SessionID: sessionID, Input: input}); err != nil {

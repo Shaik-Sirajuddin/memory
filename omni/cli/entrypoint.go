@@ -213,6 +213,8 @@ func (c *DefaultCli) newAgentCommand() *cobra.Command {
 
 func (c *DefaultCli) newTeamInitCommand() *cobra.Command {
 	flags := config.ProvisionTeamInitFlags()
+	var teamName string
+	var remote string
 
 	cmd := &cobra.Command{
 		Use:   "team-init",
@@ -237,6 +239,8 @@ func (c *DefaultCli) newTeamInitCommand() *cobra.Command {
 			if err := c.operator.TeamInit(operator.TeamInitParams{
 				Workspace: sandbox.WorkspaceDir(wd),
 				RepoURL:   resolved.RepoURL,
+				Name:      teamName,
+				Remote:    remote,
 			}); err != nil {
 				return err
 			}
@@ -250,6 +254,8 @@ func (c *DefaultCli) newTeamInitCommand() *cobra.Command {
 	}
 
 	cmd.Flags().String("repo_url", flags.RepoURL, "Optional git repository URL used to add memory as submodule")
+	cmd.Flags().StringVar(&teamName, "name", "", "Team name (defaults to workspace folder basename)")
+	cmd.Flags().StringVar(&remote, "remote", "localhost", "Remote address this workspace belongs to")
 	return cmd
 }
 
@@ -466,6 +472,8 @@ func (c *DefaultCli) newTeamListCommand() *cobra.Command {
 
 func (c *DefaultCli) newTeamInitSubcommand() *cobra.Command {
 	flags := config.ProvisionTeamInitFlags()
+	var teamName string
+	var remote string
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -490,6 +498,8 @@ func (c *DefaultCli) newTeamInitSubcommand() *cobra.Command {
 			if err := c.operator.TeamInit(operator.TeamInitParams{
 				Workspace: sandbox.WorkspaceDir(wd),
 				RepoURL:   resolved.RepoURL,
+				Name:      teamName,
+				Remote:    remote,
 			}); err != nil {
 				return err
 			}
@@ -503,6 +513,8 @@ func (c *DefaultCli) newTeamInitSubcommand() *cobra.Command {
 	}
 
 	cmd.Flags().String("repo_url", flags.RepoURL, "Optional git repository URL used to add memory as submodule")
+	cmd.Flags().StringVar(&teamName, "name", "", "Team name (defaults to workspace folder basename)")
+	cmd.Flags().StringVar(&remote, "remote", "localhost", "Remote address this workspace belongs to")
 	return cmd
 }
 
@@ -837,6 +849,7 @@ func (c *DefaultCli) newAgentPipeCommand() *cobra.Command {
 func (c *DefaultCli) newAgentExecCommand() *cobra.Command {
 	var prompt string
 	var sessionID string
+	var agentID string
 	var resume bool
 
 	cmd := &cobra.Command{
@@ -851,6 +864,14 @@ func (c *DefaultCli) newAgentExecCommand() *cobra.Command {
 				return errors.New("prompt is required")
 			}
 			name := args[0]
+			resolvedID := agentID
+			if resolvedID == "" {
+				id, err := c.resolveAgentIDByName("", name)
+				if err != nil {
+					return err
+				}
+				resolvedID = id
+			}
 			if resume {
 				if err := c.operator.ResumeAgent(operator.ResumeAgentParams{
 					Name:      name,
@@ -861,7 +882,7 @@ func (c *DefaultCli) newAgentExecCommand() *cobra.Command {
 				}
 			}
 			if _, err := c.operator.ExecInSession(operator.ExecInSessionParams{
-				AgentID:   name,
+				AgentID:   resolvedID,
 				SessionID: sessionID,
 				Prompt:    prompt,
 			}); err != nil {
@@ -874,6 +895,7 @@ func (c *DefaultCli) newAgentExecCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&prompt, "prompt", "", "Prompt to send")
 	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
+	cmd.Flags().StringVar(&agentID, "id", "", "Agent UUID (bypasses name resolution)")
 	cmd.Flags().BoolVarP(&resume, "resume", "r", false, "Resume agent before sending prompt")
 	_ = cmd.MarkFlagRequired("prompt")
 	return cmd

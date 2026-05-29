@@ -108,7 +108,7 @@ type PTYTerminalInfo struct {
 // prompts into an active PTY session via the PTY daemon.
 type PTYClient interface {
 	Pipe(agentID, sessionID string, data []byte) error
-	Start(sessionID string, command []string, env []string, dir string) error
+	Start(sessionID string, command []string, env []string, dir, submitKey string) error
 	Attach(ctx context.Context, sessionID string) error
 	Exec(sessionID, input string) error
 	Stop(sessionID string) error
