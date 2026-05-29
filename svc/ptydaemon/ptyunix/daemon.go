@@ -352,17 +352,20 @@ func (d *Daemon) handlePipe(conn *net.UnixConn, req Request) {
 	respond(conn, Response{OK: true})
 }
 
-// handleExec writes raw input to the PTY master (backward-compatible exec op).
+// handleExec pipes the pre-formatted payload from the connector and then retries
+// the submit key (100ms, 200ms) to handle timing races in the terminal.
+// The connector already wraps the prompt in bracketed paste + submit key, so we
+// must not re-wrap — we only add the retry safety net on top.
 func (d *Daemon) handleExec(conn *net.UnixConn, req Request) {
 	ptylog.Debug("exec", "agent_id", req.AgentID, "session_id", req.SessionID)
 
 	if d.inner != nil {
-		if err := d.inner.Pipe(req.AgentID, req.SessionID, []byte(req.Input)); err != nil {
+		if err := d.inner.Exec(req.AgentID, req.SessionID, req.Input); err != nil {
 			if errors.Is(err, internal.ErrNotFound) {
 				respond(conn, Response{Error: "session not found"})
 				return
 			}
-			ptylog.Error("exec pipe failed", "err", err, "session_id", req.SessionID)
+			ptylog.Error("exec failed", "err", err, "session_id", req.SessionID)
 			respond(conn, Response{Error: err.Error()})
 			return
 		}

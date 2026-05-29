@@ -68,6 +68,11 @@ type TeamInitParams struct {
 	// RepoURL is optional. When set the memory dir is tracked as a git submodule.
 	// When empty an empty git repository is initialised inside the memory dir.
 	RepoURL string `json:"repo_url,omitempty"`
+	// Name is the team name to register. Defaults to the workspace folder basename.
+	// When the name conflicts on the same remote a 5-word slug is appended automatically.
+	Name string `json:"name,omitempty"`
+	// Remote is the remote address this workspace belongs to. Defaults to "localhost".
+	Remote string `json:"remote,omitempty"`
 	// Layout is an optional path to a provision layout YAML file. When set the
 	// operator batch-creates all agents declared in the file.
 	Layout string `json:"layout,omitempty"`

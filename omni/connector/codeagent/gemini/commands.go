@@ -138,7 +138,7 @@ func (a *geminiAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.Resume
 		}
 		if p.Detached {
 			command := []string{resumeShell(), "-lc", buildShellExecCommand("gemini", geminiArgs...)}
-			if err := ptyClient.Start(resolvedSessionID, command, p.Envs, workDir); err != nil {
+			if err := ptyClient.Start(resolvedSessionID, command, p.Envs, workDir, submitKey); err != nil {
 				return nil, fmt.Errorf("gemini: resume: pty start: %w", err)
 			}
 			a.mu.Lock()
