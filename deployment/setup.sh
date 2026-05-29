@@ -7,9 +7,13 @@ BIN_DIR="${BIN_DIR:-$SCRIPT_DIR/bin}"
 BINARIES=(omni omni-server)
 
 # ── mode detection ─────────────────────────────────────────────────────────────
-# OMNI_USER_INSTALL=1 → install under ~/.local (no root required)
-# default              → system-wide install (requires root)
-USER_INSTALL="${OMNI_USER_INSTALL:-0}"
+# default              → user-local install under ~/.local (no root required)
+# OMNI_GLOBAL_INSTALL=1 → system-wide install under /opt/omni (requires root)
+if [[ "${OMNI_GLOBAL_INSTALL:-0}" == "1" ]]; then
+  USER_INSTALL=0
+else
+  USER_INSTALL=1
+fi
 
 if [[ "$USER_INSTALL" == "1" ]]; then
   OMNI_PREFIX="${OMNI_PREFIX:-${HOME}/.local/opt/omni}"

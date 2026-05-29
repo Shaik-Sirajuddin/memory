@@ -58,14 +58,19 @@ download_and_install() {
 
   # goreleaser archives are flat (no wrapping subdir); setup.sh is at deployment/setup.sh
   echo "==> running setup"
-  if [[ "$EUID" -eq 0 ]]; then
-    BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
-  elif sudo -n true 2>/dev/null || sudo -n -l 2>/dev/null | grep -q "NOPASSWD"; then
-    sudo BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
+  if [[ "${OMNI_GLOBAL_INSTALL:-0}" == "1" ]]; then
+    # explicit system-wide install — requires root or passwordless sudo
+    if [[ "$EUID" -eq 0 ]]; then
+      BIN_DIR="$tmp_dir" OMNI_GLOBAL_INSTALL=1 bash "$tmp_dir/deployment/setup.sh"
+    elif sudo -n true 2>/dev/null || sudo -n -l 2>/dev/null | grep -q "NOPASSWD"; then
+      sudo BIN_DIR="$tmp_dir" OMNI_GLOBAL_INSTALL=1 bash "$tmp_dir/deployment/setup.sh"
+    else
+      echo "error: OMNI_GLOBAL_INSTALL=1 requires root or passwordless sudo" >&2
+      exit 1
+    fi
   else
-    echo "    no passwordless sudo — installing for current user under ~/.local"
-    echo "    (if you have sudo, re-run with: sudo bash install.sh)"
-    OMNI_USER_INSTALL=1 BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
+    # default: user-local install under ~/.local (no root required)
+    BIN_DIR="$tmp_dir" bash "$tmp_dir/deployment/setup.sh"
   fi
 }
 
