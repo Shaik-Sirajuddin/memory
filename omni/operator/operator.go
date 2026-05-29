@@ -48,6 +48,7 @@ type DeleteAgentParams struct {
 type TeamInfo struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
+	Remote       string `json:"remote"`
 	WorkspaceDir string `json:"workspace_dir"`
 	Agents       int    `json:"agents"`
 }
