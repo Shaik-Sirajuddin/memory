@@ -88,7 +88,7 @@ func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-fu", "omni@root", "--no-pager"})
+		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-f", "--no-pager", "-t", "omni-server"})
 	}()
 
 	stop = func() {

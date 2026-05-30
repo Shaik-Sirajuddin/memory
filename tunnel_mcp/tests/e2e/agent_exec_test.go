@@ -19,6 +19,7 @@ const (
 // calling exec delivers the prompt without a TTY.
 func TestAgentExecNoSession(t *testing.T) {
 	cfg := newConfig(t)
+	teardownAgent(t, cfg, execTestAgent)
 	t.Cleanup(func() { teardownAgent(t, cfg, execTestAgent) })
 
 	_, logBuf := captureLog(t, cfg)
@@ -29,22 +30,20 @@ func TestAgentExecNoSession(t *testing.T) {
 		"--workspace", cfg.workspace, "--provider", "claude", "--interactive=false")
 
 	// --detach: starts session in ptydaemon, returns immediately, no TTY needed
-	t.Logf("resuming %s in detached mode", execTestAgent)
 	runOmni(t, cfg, "agent", "resume", execTestAgent, "--detach", "--workspace", cfg.workspace)
 	time.Sleep(execStartWait)
 
 	out := runOmni(t, cfg, "agent", "exec", execTestAgent,
 		"--prompt", "reply with the single word: pong")
-	t.Logf("exec output: %s", out)
-
 	time.Sleep(execPromptWait)
 
 	log := logBuf.String()
-	t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
-
 	assertNoLogErrors(t, log)
 	if !strings.Contains(out, "prompt sent") && !strings.Contains(log, "ExecInSession") {
 		t.Errorf("expected prompt delivery confirmation, got output=%q", out)
+	}
+	if t.Failed() {
+		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
 	}
 }
 
@@ -53,6 +52,7 @@ func TestAgentExecNoSession(t *testing.T) {
 func TestAgentResumeDetached(t *testing.T) {
 	cfg := newConfig(t)
 	name := execTestAgent + "-detach"
+	teardownAgent(t, cfg, name)
 	t.Cleanup(func() { teardownAgent(t, cfg, name) })
 
 	_, logBuf := captureLog(t, cfg)
@@ -62,14 +62,11 @@ func TestAgentResumeDetached(t *testing.T) {
 	runOmni(t, cfg, "agent", "init", name,
 		"--workspace", cfg.workspace, "--provider", "claude", "--interactive=false")
 
-	t.Logf("resuming %s with --detach", name)
 	runOmni(t, cfg, "agent", "resume", name, "--detach", "--workspace", cfg.workspace)
 	time.Sleep(execStartWait)
 
 	out := runOmni(t, cfg, "agent", "exec", name,
 		"--prompt", "reply with the single word: pong")
-	t.Logf("exec output: %s", out)
-
 	time.Sleep(execPromptWait)
 
 	log := logBuf.String()
@@ -77,19 +74,26 @@ func TestAgentResumeDetached(t *testing.T) {
 	if !strings.Contains(out, "prompt sent") && !strings.Contains(log, "ExecInSession") {
 		t.Errorf("expected prompt delivery confirmation, got output=%q", out)
 	}
+	if t.Failed() {
+		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
+	}
 }
 
 // TestCodexAgentDelivery verifies a codex-provider agent receives a tunnel-mcp
 // send_message from a claude agent.
 //
-// SKIP until codex auth is confirmed available in the e2e container.
+// SKIP: same root cause as TestCodexSaysHiToClaude — codex sessions do not
+// connect to tunnel-mcp MCP server so delivery cannot be observed via journalctl.
+// Claude (sender) calls send_message fine but the 30s observation window is also
+// too short for the auto-resume path. Tracked in server-bugs.md #3.
 func TestCodexAgentDelivery(t *testing.T) {
-	t.Skip("pending: codex auth availability in container not confirmed")
-
 	cfg := newConfig(t)
 	sender := "e2e-codex-sender"
 	receiver := codexTestAgent
 
+	teardownAgent(t, cfg, sender)
+	teardownAgent(t, cfg, receiver)
+	t.Skip("blocked: codex sessions do not connect to tunnel-mcp MCP server — see server-bugs.md #3")
 	t.Cleanup(func() {
 		teardownAgent(t, cfg, sender)
 		teardownAgent(t, cfg, receiver)
@@ -113,8 +117,9 @@ func TestCodexAgentDelivery(t *testing.T) {
 	time.Sleep(execPromptWait)
 
 	log := logBuf.String()
-	t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
-
 	assertNoLogErrors(t, log)
 	assertLogContains(t, log, "send_message", "send_message must appear in journalctl")
+	if t.Failed() {
+		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
+	}
 }
