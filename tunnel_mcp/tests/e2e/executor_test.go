@@ -70,6 +70,10 @@ type DockerExecutor struct {
 	// env is passed to every exec so socket paths set in /etc/profile.d are available
 	// without a login shell.
 	env []string
+	// workDir is set as the working directory for every exec call. When set to an
+	// isolated test workspace, commands like `team init` (which use os.Getwd()) run
+	// in the right directory rather than /build.
+	workDir string
 }
 
 func newDockerExecutor(t *testing.T, containerName string) *DockerExecutor {
@@ -96,10 +100,18 @@ func newDockerExecutor(t *testing.T, containerName string) *DockerExecutor {
 	return &DockerExecutor{cli: cli, container: containerName, env: env}
 }
 
+// WithWorkDir returns a copy of the executor that runs all commands in dir.
+func (e *DockerExecutor) WithWorkDir(dir string) *DockerExecutor {
+	cp := *e
+	cp.workDir = dir
+	return &cp
+}
+
 func (e *DockerExecutor) RunCommand(ctx context.Context, cmd []string) (int, []byte, error) {
 	resp, err := e.cli.ContainerExecCreate(ctx, e.container, container.ExecOptions{
 		Cmd:          cmd,
 		Env:          e.env,
+		WorkingDir:   e.workDir,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -128,6 +140,7 @@ func (e *DockerExecutor) StreamCommand(ctx context.Context, w io.Writer, cmd []s
 	resp, err := e.cli.ContainerExecCreate(ctx, e.container, container.ExecOptions{
 		Cmd:          cmd,
 		Env:          e.env,
+		WorkingDir:   e.workDir,
 		AttachStdout: true,
 		AttachStderr: true,
 	})

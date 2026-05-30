@@ -13,8 +13,7 @@ import (
 
 // ─── team commands ─────────────────────────────────────────────────────────────
 
-// TestOmniTeamInit verifies `omni team init` succeeds.
-// team init has no --workspace flag — it uses the container's CWD (/build).
+// TestOmniTeamInit verifies `omni team init` succeeds in an isolated workspace.
 func TestOmniTeamInit(t *testing.T) {
 	cfg := newConfig(t)
 	_, logBuf := captureLog(t, cfg)
@@ -41,7 +40,7 @@ func TestOmniTeamList(t *testing.T) {
 	out := runOmni(t, cfg, "team", "list", "--output", "json")
 
 	require.NotEmpty(t, out, "team list output must not be empty")
-	assert.Contains(t, out, "/build", "team list JSON should reference the container workspace")
+	assert.Contains(t, out, cfg.workspace, "team list JSON should reference the test workspace")
 	t.Logf("journalctl snapshot:\n%s", logBuf.String())
 }
 
@@ -57,7 +56,7 @@ func TestOmniTeamGet(t *testing.T) {
 	out := runOmni(t, cfg, "team", "get", "--output", "json")
 
 	require.NotEmpty(t, out)
-	assert.Contains(t, out, "/build", "team get should reference container workspace dir")
+	assert.Contains(t, out, cfg.workspace, "team get should reference the test workspace dir")
 	t.Logf("journalctl snapshot:\n%s", logBuf.String())
 }
 

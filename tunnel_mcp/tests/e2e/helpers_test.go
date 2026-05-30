@@ -5,7 +5,9 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,24 +20,33 @@ type testConfig struct {
 	container string
 }
 
+// newConfig creates an isolated test environment. Each test gets its own
+// workspace directory under /tmp inside the container so tests never touch
+// /build or the real agents (guide, tagy, tclaude, tecodex).
+// Override with OMNI_WORKSPACE env var when a fixed path is required.
 func newConfig(t *testing.T) testConfig {
 	t.Helper()
 	target := envOr("E2E_TARGET", "docker")
 	ctr := envOr("E2E_CONTAINER", "development-ubuntu-1")
 
-	var ex CommandExecutor
+	var baseEx CommandExecutor
 	switch target {
 	case "local":
-		ex = &HostExecutor{}
+		baseEx = &HostExecutor{}
 	default:
-		ex = newDockerExecutor(t, ctr)
+		baseEx = newDockerExecutor(t, ctr)
 	}
 
-	workspace := envOr("OMNI_WORKSPACE", "/build")
-	if target == "local" {
-		if wd, err := os.Getwd(); err == nil {
-			workspace = envOr("OMNI_WORKSPACE", wd)
-		}
+	workspace := os.Getenv("OMNI_WORKSPACE")
+	if workspace == "" {
+		workspace = provisionWorkspace(t, baseEx)
+	}
+
+	// Pin the working directory to the isolated workspace so commands like
+	// `omni team init` (which use os.Getwd()) operate in the right place.
+	var ex CommandExecutor = baseEx
+	if de, ok := baseEx.(*DockerExecutor); ok {
+		ex = de.WithWorkDir(workspace)
 	}
 
 	return testConfig{
@@ -44,6 +55,26 @@ func newConfig(t *testing.T) testConfig {
 		workspace: workspace,
 		container: ctr,
 	}
+}
+
+// provisionWorkspace creates a fresh temp directory inside the container and
+// registers a cleanup to remove it when the test finishes.
+func provisionWorkspace(t *testing.T, ex CommandExecutor) string {
+	t.Helper()
+	// Use a name derived from the test name so it's easy to spot in logs.
+	safe := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	dir := fmt.Sprintf("/tmp/e2e-%s", safe)
+
+	ctx := context.Background()
+	code, _, _ := ex.RunCommand(ctx, []string{"mkdir", "-p", dir})
+	if code != 0 {
+		t.Fatalf("provisionWorkspace: could not create %s", dir)
+	}
+	t.Cleanup(func() {
+		// Best-effort cleanup — /tmp is tmpfs and wiped on container restart anyway.
+		_, _, _ = ex.RunCommand(context.Background(), []string{"rm", "-rf", dir})
+	})
+	return dir
 }
 
 func envOr(key, def string) string {
@@ -78,8 +109,6 @@ func (b *syncBuffer) Bytes() []byte {
 }
 
 // WaitFor polls the buffer every 500ms until substr appears or timeout expires.
-// Returns true if found. Use this instead of time.Sleep + String() so tests
-// exit as soon as the expected log line arrives rather than waiting the full window.
 func (b *syncBuffer) WaitFor(substr string, timeout time.Duration) bool {
 	needle := []byte(substr)
 	deadline := time.Now().Add(timeout)
