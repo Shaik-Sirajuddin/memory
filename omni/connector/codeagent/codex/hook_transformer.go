@@ -195,6 +195,12 @@ func responseFromOutput(output codehooks.HookOuput) confhooks.Response {
 
 // omniEntryToHookDef converts an omni HookEntry to a Codex hook definition.
 // Returns nil for URL-only entries — Codex CLI only supports command hooks.
+//
+// Limitation: codexHookDef.Command is a single shell string (no separate Args
+// field). Command and Args are joined with spaces, so individual args that
+// contain spaces are not round-trip safe. All omni default hooks use simple
+// flag args (e.g. --event SessionStart) with no embedded spaces, so this is
+// acceptable for the current use case.
 func omniEntryToHookDef(entry omniconfig.HookEntry) *codexHookDef {
 	if entry.Command == nil {
 		return nil
@@ -208,9 +214,10 @@ func omniEntryToHookDef(entry omniconfig.HookEntry) *codexHookDef {
 }
 
 // hookDefToOmniEntry converts a Codex hook definition back to an omni HookEntry.
-// The Codex YAML stores command + args as one shell string, so we split on
-// whitespace to restore the original Command + Args fields — preserving the
+// The Codex config stores command + args as one shell string; we split on
+// whitespace to restore the original Command + Args fields, preserving the
 // entryKey invariant used by the registrar's verify() check.
+// Args containing spaces are not supported (see omniEntryToHookDef).
 func hookDefToOmniEntry(def codexHookDef) omniconfig.HookEntry {
 	parts := strings.Fields(def.Command)
 	var cmd string

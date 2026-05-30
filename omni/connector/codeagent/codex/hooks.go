@@ -250,6 +250,9 @@ func writeHooksConfig(path string, hooksByEvent map[string][]codexHookMatcher) e
 	return writeConfigTOML(path, raw)
 }
 
+// extractHooks converts the raw TOML hooks value back to typed matchers.
+// BurntSushi/toml decodes arrays-of-tables into []interface{} (not
+// []map[string]interface{}), so each element must be cast individually.
 func extractHooks(raw map[string]interface{}) map[string][]codexHookMatcher {
 	out := map[string][]codexHookMatcher{}
 	hooksMap, ok := raw["hooks"].(map[string]interface{})
@@ -257,17 +260,25 @@ func extractHooks(raw map[string]interface{}) map[string][]codexHookMatcher {
 		return out
 	}
 	for event, matchersVal := range hooksMap {
-		matchersSlice, ok := matchersVal.([]map[string]interface{})
+		matchersSlice, ok := matchersVal.([]interface{})
 		if !ok {
 			continue
 		}
-		for _, m := range matchersSlice {
+		for _, elem := range matchersSlice {
+			m, ok := elem.(map[string]interface{})
+			if !ok {
+				continue
+			}
 			var hm codexHookMatcher
 			if v, ok := m["matcher"].(string); ok {
 				hm.Matcher = v
 			}
-			if defsVal, ok := m["hooks"].([]map[string]interface{}); ok {
-				for _, d := range defsVal {
+			if defsRaw, ok := m["hooks"].([]interface{}); ok {
+				for _, dr := range defsRaw {
+					d, ok := dr.(map[string]interface{})
+					if !ok {
+						continue
+					}
 					hd := codexHookDef{Type: "command"}
 					if v, ok := d["type"].(string); ok {
 						hd.Type = v
