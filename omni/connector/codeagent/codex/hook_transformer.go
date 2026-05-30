@@ -41,17 +41,17 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 		return false // URL-only entries not expressible as Codex command hooks
 	}
 
-	configPath, err := globalHooksJSONPath()
+	configPath, err := globalConfigPath()
 	if err != nil {
 		return false
 	}
-	cfg, err := readHooksConfig(configPath)
+	hooksByEvent, err := readHooksConfig(configPath)
 	if err != nil {
 		return false
 	}
 
 	// Deduplicate by command string.
-	for _, m := range cfg.Hooks[codexEvent] {
+	for _, m := range hooksByEvent[codexEvent] {
 		for _, d := range m.Hooks {
 			if d.Command == def.Command {
 				return false
@@ -59,14 +59,14 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 		}
 	}
 
-	if cfg.Hooks == nil {
-		cfg.Hooks = map[string][]codexHookMatcher{}
+	if hooksByEvent == nil {
+		hooksByEvent = map[string][]codexHookMatcher{}
 	}
-	cfg.Hooks[codexEvent] = append(cfg.Hooks[codexEvent], codexHookMatcher{
+	hooksByEvent[codexEvent] = append(hooksByEvent[codexEvent], codexHookMatcher{
 		Hooks: []codexHookDef{*def},
 	})
 
-	if err := writeHooksConfig(configPath, cfg); err != nil {
+	if err := writeHooksConfig(configPath, hooksByEvent); err != nil {
 		return false
 	}
 
@@ -76,17 +76,17 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 }
 
 func (t *codexHookTransformer) GetHooks() []confhooks.Hook {
-	configPath, err := globalHooksJSONPath()
+	configPath, err := globalConfigPath()
 	if err != nil {
 		return nil
 	}
-	cfg, err := readHooksConfig(configPath)
+	hooksByEvent, err := readHooksConfig(configPath)
 	if err != nil {
 		return nil
 	}
 
 	var out []confhooks.Hook
-	for codexEvent, matchers := range cfg.Hooks {
+	for codexEvent, matchers := range hooksByEvent {
 		omniEvent, ok := omniEventFromCodex(codexEvent)
 		if !ok {
 			continue

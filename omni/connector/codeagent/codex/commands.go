@@ -84,6 +84,11 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 		logger.Warn("Create: could not sync model to config", "err", syncErr)
 	}
 
+	// Auto-approve tunnel-mcp tool calls so Codex never pauses for MCP approval.
+	if mcpErr := ensureMCPApprovalMode("tunnel-mcp"); mcpErr != nil {
+		logger.Warn("Create: could not set MCP approval mode", "err", mcpErr)
+	}
+
 	// If the caller supplies a prior session ID, attach to it by verifying codex
 	// can resume it. This re-uses an existing conversation rather than starting fresh.
 	var sessionID string
