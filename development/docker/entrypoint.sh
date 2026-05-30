@@ -19,6 +19,8 @@ install_and_setup() {
   # system-wide mode: user@0 nested systemd fails in containers due to inotify limits
   OMNI_GLOBAL_INSTALL=1 source "$WORKSPACE/deployment/setup.sh"
   # binaries are already at /opt/omni/bin from image build — skip install_binaries
+  # OMNI_GLOBAL_INSTALL=1 → SYMLINK_DIR=/usr/local/bin, which is in default PATH
+  # so bare "omni hook ..." in claude/codex hook commands resolves correctly
   link_binaries
   write_service
 
@@ -182,11 +184,15 @@ bearer_token_env_var = "AXO_LINK_MCP_AUTH_TOKEN"
 EOF
   fi
   # always pin the model so syncModelConfig can't wipe it to empty
+  # awk -v avoids shell delimiter issues if CODEX_MODEL ever contains | & or \
   if [[ -n "${CODEX_MODEL:-}" && -f /root/.codex/config.toml ]]; then
-    if grep -q '^model ' /root/.codex/config.toml 2>/dev/null; then
-      sed -i "s|^model .*|model = \"${CODEX_MODEL}\"|" /root/.codex/config.toml
+    local tmp; tmp="$(mktemp)"
+    if grep -q '^model[[:space:]]*=' /root/.codex/config.toml; then
+      awk -v m="$CODEX_MODEL" '/^model[[:space:]]*=/{print "model = \"" m "\""; next} {print}' \
+        /root/.codex/config.toml > "$tmp" && mv "$tmp" /root/.codex/config.toml
     else
-      sed -i "1s|^|model = \"${CODEX_MODEL}\"\n|" /root/.codex/config.toml
+      { printf 'model = "%s"\n' "$CODEX_MODEL"; cat /root/.codex/config.toml; } \
+        > "$tmp" && mv "$tmp" /root/.codex/config.toml
     fi
   fi
 }
