@@ -67,6 +67,9 @@ func (e *HostExecutor) StreamCommand(ctx context.Context, w io.Writer, cmd []str
 type DockerExecutor struct {
 	cli       *dockerclient.Client
 	container string
+	// env is passed to every exec so socket paths set in /etc/profile.d are available
+	// without a login shell.
+	env []string
 }
 
 func newDockerExecutor(t *testing.T, containerName string) *DockerExecutor {
@@ -79,12 +82,22 @@ func newDockerExecutor(t *testing.T, containerName string) *DockerExecutor {
 	if err != nil || !info.State.Running {
 		t.Skipf("docker executor: container %q not running (err=%v)", containerName, err)
 	}
-	return &DockerExecutor{cli: cli, container: containerName}
+	// Build exec env: forward only the vars needed by the omni CLI.
+	// Do NOT seed from info.Config.Env — that includes API keys from the .env.docker
+	// file and would forward them to every subprocess spawned by docker exec.
+	env := []string{
+		// Socket paths written by /etc/profile.d/omni-sockets.sh — not sourced by docker exec.
+		"XDG_RUNTIME_DIR=/run/user/0",
+		"OMNI_PTY_SOCKET=/run/user/0/omni/omni-pty.sock",
+		"HOOK_OPERATOR_SOCKET=/run/user/0/omni/hook-operator.sock",
+	}
+	return &DockerExecutor{cli: cli, container: containerName, env: env}
 }
 
 func (e *DockerExecutor) RunCommand(ctx context.Context, cmd []string) (int, []byte, error) {
 	resp, err := e.cli.ContainerExecCreate(ctx, e.container, container.ExecOptions{
 		Cmd:          cmd,
+		Env:          e.env,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -112,6 +125,7 @@ func (e *DockerExecutor) RunCommand(ctx context.Context, cmd []string) (int, []b
 func (e *DockerExecutor) StreamCommand(ctx context.Context, w io.Writer, cmd []string) error {
 	resp, err := e.cli.ContainerExecCreate(ctx, e.container, container.ExecOptions{
 		Cmd:          cmd,
+		Env:          e.env,
 		AttachStdout: true,
 		AttachStderr: true,
 	})

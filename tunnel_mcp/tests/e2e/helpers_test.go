@@ -20,7 +20,7 @@ type testConfig struct {
 func newConfig(t *testing.T) testConfig {
 	t.Helper()
 	target := envOr("E2E_TARGET", "docker")
-	ctr := envOr("E2E_CONTAINER", "omni-dev")
+	ctr := envOr("E2E_CONTAINER", "omni-e2e-ubuntu-1")
 
 	var ex CommandExecutor
 	switch target {
@@ -88,7 +88,7 @@ func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-fu", "omni@root", "--no-pager"})
+		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-f", "--no-pager", "-t", "omni-server"})
 	}()
 
 	stop = func() {
