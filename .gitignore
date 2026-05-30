@@ -3,6 +3,7 @@
 .codex
 !development/local.example/.codex/
 .gemini
+!development/local.example/.gemini/
 .antigravitycli
 agent[-_]*.md
 .agents
