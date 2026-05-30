@@ -666,6 +666,7 @@ func (c *DefaultCli) newAgentCreateCommand() *cobra.Command {
 func (c *DefaultCli) newAgentResumeCommand() *cobra.Command {
 	flags := config.ProvisionAgentResumeFlags()
 	var sessionID string
+	var detach bool
 
 	cmd := &cobra.Command{
 		Use:   "resume <name>",
@@ -686,6 +687,7 @@ func (c *DefaultCli) newAgentResumeCommand() *cobra.Command {
 				Provider:      codeagent.Provider(resolved.Provider),
 				Model:         resolved.Model,
 				SessionID:     sessionID,
+				Detached:      detach,
 			})
 		},
 	}
@@ -695,6 +697,7 @@ func (c *DefaultCli) newAgentResumeCommand() *cobra.Command {
 	cmd.Flags().StringP("provider", "p", flags.Provider, "Provider used only when --init_if_missing creates a new agent")
 	cmd.Flags().String("model", flags.Model, "Model used only when --init_if_missing creates a new agent")
 	cmd.Flags().StringVar(&sessionID, "session-id", "", "Optional session ID")
+	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "Start PTY daemon session and return immediately without attaching")
 	return cmd
 }
 

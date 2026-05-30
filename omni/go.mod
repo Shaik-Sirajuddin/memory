@@ -3,6 +3,7 @@ module github.com/Shaik-Sirajuddin/memory
 go 1.26.1
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/Shaik-Sirajuddin/memory/pkg/log v0.0.0
 	github.com/Shaik-Sirajuddin/memory/svc/ptydaemon v0.0.0
 	github.com/adrg/xdg v0.5.3
@@ -23,7 +24,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
