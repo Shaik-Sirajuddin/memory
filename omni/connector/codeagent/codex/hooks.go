@@ -206,7 +206,13 @@ func readHooksConfig(path string) (map[string][]codexHookMatcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return extractHooks(raw), nil
+	hooks := extractHooks(raw)
+	events := make([]string, 0, len(hooks))
+	for e := range hooks {
+		events = append(events, e)
+	}
+	logger.Debug("readHooksConfig", "path", path, "events", events)
+	return hooks, nil
 }
 
 func writeHooksConfig(path string, hooksByEvent map[string][]codexHookMatcher) error {
@@ -247,6 +253,11 @@ func writeHooksConfig(path string, hooksByEvent map[string][]codexHookMatcher) e
 	}
 	raw["hooks"] = hooksRaw
 
+	events := make([]string, 0, len(hooksByEvent))
+	for e := range hooksByEvent {
+		events = append(events, e)
+	}
+	logger.Debug("writeHooksConfig", "path", path, "events", events)
 	return writeConfigTOML(path, raw)
 }
 

@@ -33,6 +33,7 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 	omniEvent := resolveEventName(name, entry)
 	codexEvent, ok := codexEventName(omniEvent)
 	if !ok {
+		logger.Debug("HookTransformer.Add: no codex event mapping", "name", name, "omniEvent", omniEvent)
 		return false
 	}
 
@@ -45,10 +46,11 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 	if err != nil {
 		return false
 	}
-	hooksByEvent, err := readHooksConfig(configPath)
-	if err != nil {
-		return false
-	}
+
+	// Build hooksByEvent from the in-memory index rather than reading the file.
+	// File round-trips lose previously written hooks due to TOML encoding differences,
+	// causing each Add() to overwrite the file with only the newly added hook.
+	hooksByEvent := t.indexToHooksByEvent()
 
 	// Deduplicate by command string.
 	for _, m := range hooksByEvent[codexEvent] {
@@ -59,20 +61,39 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 		}
 	}
 
-	if hooksByEvent == nil {
-		hooksByEvent = map[string][]codexHookMatcher{}
-	}
 	hooksByEvent[codexEvent] = append(hooksByEvent[codexEvent], codexHookMatcher{
 		Hooks: []codexHookDef{*def},
 	})
 
 	if err := writeHooksConfig(configPath, hooksByEvent); err != nil {
+		logger.Debug("HookTransformer.Add: write failed", "name", name, "codexEvent", codexEvent, "path", configPath, "err", err)
 		return false
 	}
 
+	logger.Debug("HookTransformer.Add: hook written", "name", name, "codexEvent", codexEvent, "path", configPath)
 	t.index[name] = entry
 	t.order = append(t.order, name)
 	return true
+}
+
+// indexToHooksByEvent builds the hooksByEvent map from the in-memory index.
+// Uses t.order to preserve insertion order across registrations.
+func (t *codexHookTransformer) indexToHooksByEvent() map[string][]codexHookMatcher {
+	hbe := map[string][]codexHookMatcher{}
+	for _, n := range t.order {
+		e := t.index[n]
+		omniEvent := resolveEventName(n, e)
+		codexEvent, ok := codexEventName(omniEvent)
+		if !ok {
+			continue
+		}
+		def := omniEntryToHookDef(e)
+		if def == nil {
+			continue
+		}
+		hbe[codexEvent] = append(hbe[codexEvent], codexHookMatcher{Hooks: []codexHookDef{*def}})
+	}
+	return hbe
 }
 
 func (t *codexHookTransformer) GetHooks() []confhooks.Hook {
