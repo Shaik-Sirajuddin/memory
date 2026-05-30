@@ -89,10 +89,9 @@ func TestAgentResumeDetached(t *testing.T) {
 // TestCodexAgentDelivery verifies a codex-provider agent receives a tunnel-mcp
 // send_message from a claude agent.
 //
-// SKIP: same root cause as TestCodexSaysHiToClaude — codex sessions do not
-// connect to tunnel-mcp MCP server so delivery cannot be observed via journalctl.
-// Claude (sender) calls send_message fine but the 30s observation window is also
-// too short for the auto-resume path. Tracked in server-bugs.md #3.
+// NOTE: currently validates sender (claude) only — codex receiver session fails to
+// start in e2e container due to expired OAuth tokens in omni-e2e_agent-codex volume.
+// Tracked: codex-connector asked to add OPENAI_API_KEY or share dev auth volume.
 func TestCodexAgentDelivery(t *testing.T) {
 	cfg := newConfig(t)
 	sender := "e2e-codex-sender"
@@ -100,7 +99,9 @@ func TestCodexAgentDelivery(t *testing.T) {
 
 	teardownAgent(t, cfg, sender)
 	teardownAgent(t, cfg, receiver)
-	t.Skip("blocked: codex sessions do not connect to tunnel-mcp MCP server — see server-bugs.md #3")
+	// Codex session fails with "not authenticated" in omni-e2e container — OAuth tokens in
+	// omni-e2e_agent-codex volume are expired. Pending auth fix from codex-connector team.
+	t.Skip("blocked: codex auth expired in e2e container — awaiting OPENAI_API_KEY or shared auth volume fix")
 	t.Cleanup(func() {
 		teardownAgent(t, cfg, sender)
 		teardownAgent(t, cfg, receiver)
@@ -121,11 +122,19 @@ func TestCodexAgentDelivery(t *testing.T) {
 
 	prompt := "Use the tunnel-mcp send_message tool to send 'hi from claude' to the agent named '" + receiver + "'. Call the tool now."
 	runOmni(t, cfg, "agent", "exec", sender, "--prompt", prompt)
-	time.Sleep(execPromptWait)
+
+	if !logBuf.WaitFor("tool=send_message", sendMessageWait) {
+		t.Errorf("send_message tool call not observed within %s", sendMessageWait)
+		t.Logf("=== journalctl (%d bytes) ===\n%s", len(logBuf.String()), logBuf.String())
+		return
+	}
+	if !logBuf.WaitFor("exec in session", execInSessionWait) {
+		t.Logf("WARN: exec in session not observed for codex receiver within %s (server-bugs.md #7)", execInSessionWait)
+	}
 
 	log := logBuf.String()
 	assertNoLogErrors(t, log)
-	assertLogContains(t, log, "send_message", "send_message must appear in journalctl")
+	assertNoExecSessionFailed(t, log)
 	if t.Failed() {
 		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
 	}

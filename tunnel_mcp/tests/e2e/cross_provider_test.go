@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	crossProviderStartWait    = 20 * time.Second // codex needs more startup time than claude
-	crossProviderDeliveryWait = 90 * time.Second
+	crossProviderStartWait = 20 * time.Second // codex may need longer than claude to initialise
 )
 
 // TestCodexSaysHiToClaude verifies cross-provider message delivery:
@@ -18,12 +17,6 @@ const (
 //
 // The prompt explicitly instructs codex to stop after sending so the
 // two agents do not start an open-ended conversation.
-//
-// SKIP: codex PTY sessions never appear in MCP handler logs (no sender_id=<codex-agent>
-// even after 90s). Root cause: codex is not connecting to the tunnel-mcp MCP server
-// — likely AXO_LINK_MCP_* env vars not injected by operator for codex sessions, or
-// codex runtime not loading /root/.codex/config.toml MCP section. Tracked in
-// memory/agents/e2e/generated/server-bugs.md.
 func TestCodexSaysHiToClaude(t *testing.T) {
 	codexAgent := "e2e-codex-hi"
 	claudeAgent := "e2e-claude-hi"
@@ -31,7 +24,9 @@ func TestCodexSaysHiToClaude(t *testing.T) {
 	cfg := newConfig(t)
 	teardownAgent(t, cfg, codexAgent)
 	teardownAgent(t, cfg, claudeAgent)
-	t.Skip("blocked: codex sessions do not connect to tunnel-mcp MCP server — see server-bugs.md #3")
+	// Codex session fails with "not authenticated" in omni-e2e container.
+	// Pending auth fix from codex-connector team (OPENAI_API_KEY or shared auth volume).
+	t.Skip("blocked: codex auth expired in e2e container — awaiting OPENAI_API_KEY or shared auth volume fix")
 	t.Cleanup(func() {
 		teardownAgent(t, cfg, codexAgent)
 		teardownAgent(t, cfg, claudeAgent)
@@ -57,12 +52,20 @@ func TestCodexSaysHiToClaude(t *testing.T) {
 		claudeAgent,
 	)
 	runOmni(t, cfg, "agent", "exec", codexAgent, "--prompt", prompt)
-	time.Sleep(crossProviderDeliveryWait)
+
+	if !logBuf.WaitFor("tool=send_message", sendMessageWait) {
+		t.Errorf("codex send_message not observed within %s", sendMessageWait)
+		t.Logf("=== journalctl (%d bytes) ===\n%s", len(logBuf.String()), logBuf.String())
+		return
+	}
+	if !logBuf.WaitFor("exec in session", execInSessionWait) {
+		t.Logf("WARN: exec in session not observed for claude receiver within %s (server-bugs.md #7)", execInSessionWait)
+	}
 
 	log := logBuf.String()
 	assertNoLogErrors(t, log)
-	assertLogContains(t, log, "send_message", "send_message tool call must appear in journalctl")
-	assertLogContains(t, log, "sender_id="+codexAgent, "mcp-handler must log codex agent as sender")
+	assertSenderLogged(t, log, codexAgent)
+	assertNoExecSessionFailed(t, log)
 	if t.Failed() {
 		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
 	}
