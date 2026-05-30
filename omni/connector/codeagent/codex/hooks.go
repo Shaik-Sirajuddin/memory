@@ -9,7 +9,6 @@ import (
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
-	"gopkg.in/yaml.v3"
 )
 
 // ============================================================
@@ -185,63 +184,63 @@ func entryToHookData(e codexHookEntry, path hooks.HookPath) *hooks.HookData {
 }
 
 // ============================================================
-// config.yaml — Codex native hook configuration
+// hooks.json — Codex native hook configuration
 //
-// Hooks are registered in ~/.codex/config.yaml (separate from the
-// model/sandbox settings in config.toml). The format matches the
-// hooks-config.schema.json bundled in codex/hooks/.
+// Global hooks are registered in ~/.codex/hooks.json.
+// Workspace hooks go in <workspaceDir>/.codex/hooks.json.
+// The format mirrors the hooks-config.schema.json bundled in codex/hooks/.
 // ============================================================
 
-// codexConfigYAML mirrors the hooks section of ~/.codex/config.yaml.
-type codexConfigYAML struct {
-	Hooks map[string][]codexHookMatcher `yaml:"hooks,omitempty"`
+// codexHooksConfig mirrors the top-level structure of ~/.codex/hooks.json.
+type codexHooksConfig struct {
+	Hooks map[string][]codexHookMatcher `json:"hooks,omitempty"`
 }
 
 // codexHookMatcher is one entry under a hook event key.
 // Matcher is an optional regex; omitting it matches every invocation.
 type codexHookMatcher struct {
-	Matcher string          `yaml:"matcher,omitempty"`
-	Hooks   []codexHookDef `yaml:"hooks"`
+	Matcher string         `json:"matcher,omitempty"`
+	Hooks   []codexHookDef `json:"hooks"`
 }
 
 // codexHookDef is a single hook command entry.
 type codexHookDef struct {
-	Type    string `yaml:"type"`            // always "command"
-	Command string `yaml:"command"`
-	Timeout int    `yaml:"timeout,omitempty"`
+	Type    string `json:"type"`              // always "command"
+	Command string `json:"command"`
+	Timeout int    `json:"timeout,omitempty"`
 }
 
-// globalConfigYAMLPath returns ~/.codex/config.yaml.
-func globalConfigYAMLPath() (string, error) {
+// globalHooksJSONPath returns ~/.codex/hooks.json.
+func globalHooksJSONPath() (string, error) {
 	dir, err := globalCodexDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "config.yaml"), nil
+	return filepath.Join(dir, "hooks.json"), nil
 }
 
-func readConfigYAML(path string) (codexConfigYAML, error) {
+func readHooksConfig(path string) (codexHooksConfig, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return codexConfigYAML{}, nil
+		return codexHooksConfig{}, nil
 	}
 	if err != nil {
-		return codexConfigYAML{}, fmt.Errorf("codex: read config.yaml: %w", err)
+		return codexHooksConfig{}, fmt.Errorf("codex: read hooks.json: %w", err)
 	}
-	var cfg codexConfigYAML
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return codexConfigYAML{}, fmt.Errorf("codex: parse config.yaml: %w", err)
+	var cfg codexHooksConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return codexHooksConfig{}, fmt.Errorf("codex: parse hooks.json: %w", err)
 	}
 	return cfg, nil
 }
 
-func writeConfigYAML(path string, cfg codexConfigYAML) error {
+func writeHooksConfig(path string, cfg codexHooksConfig) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("codex: mkdir config.yaml dir: %w", err)
+		return fmt.Errorf("codex: mkdir hooks.json dir: %w", err)
 	}
-	data, err := yaml.Marshal(cfg)
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return fmt.Errorf("codex: marshal config.yaml: %w", err)
+		return fmt.Errorf("codex: marshal hooks.json: %w", err)
 	}
 	return os.WriteFile(path, data, 0o644)
 }

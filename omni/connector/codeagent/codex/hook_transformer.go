@@ -41,11 +41,11 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 		return false // URL-only entries not expressible as Codex command hooks
 	}
 
-	configPath, err := globalConfigYAMLPath()
+	configPath, err := globalHooksJSONPath()
 	if err != nil {
 		return false
 	}
-	cfg, err := readConfigYAML(configPath)
+	cfg, err := readHooksConfig(configPath)
 	if err != nil {
 		return false
 	}
@@ -66,7 +66,7 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 		Hooks: []codexHookDef{*def},
 	})
 
-	if err := writeConfigYAML(configPath, cfg); err != nil {
+	if err := writeHooksConfig(configPath, cfg); err != nil {
 		return false
 	}
 
@@ -76,11 +76,11 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 }
 
 func (t *codexHookTransformer) GetHooks() []confhooks.Hook {
-	configPath, err := globalConfigYAMLPath()
+	configPath, err := globalHooksJSONPath()
 	if err != nil {
 		return nil
 	}
-	cfg, err := readConfigYAML(configPath)
+	cfg, err := readHooksConfig(configPath)
 	if err != nil {
 		return nil
 	}
