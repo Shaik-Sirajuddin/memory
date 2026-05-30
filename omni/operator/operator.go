@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultProvider        = "claude"
+	DefaultProvider = "claude"
 )
 
 type GetCodeAgentsParams struct {
@@ -38,6 +38,7 @@ type ResumeAgentParams struct {
 	Provider      codeagent.Provider   `json:"provider,omitempty"`
 	Model         string               `json:"model,omitempty"`
 	SessionID     string               `json:"session_id,omitempty"`
+	Detached      bool                 `json:"detached,omitempty"`
 }
 
 type DeleteAgentParams struct {
@@ -47,6 +48,7 @@ type DeleteAgentParams struct {
 type TeamInfo struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
+	Remote       string `json:"remote"`
 	WorkspaceDir string `json:"workspace_dir"`
 	Agents       int    `json:"agents"`
 }
@@ -66,6 +68,31 @@ type TeamInitParams struct {
 	// RepoURL is optional. When set the memory dir is tracked as a git submodule.
 	// When empty an empty git repository is initialised inside the memory dir.
 	RepoURL string `json:"repo_url,omitempty"`
+	// Name is the team name to register. Defaults to the workspace folder basename.
+	// When the name conflicts on the same remote a 5-word slug is appended automatically.
+	Name string `json:"name,omitempty"`
+	// Remote is the remote address this workspace belongs to. Defaults to "localhost".
+	Remote string `json:"remote,omitempty"`
+	// Layout is an optional path to a provision layout YAML file. When set the
+	// operator batch-creates all agents declared in the file.
+	Layout string `json:"layout,omitempty"`
+	// TerminalLayout is an optional path to a terminal-native layout file
+	// (e.g. a KDL file for zellij). Used together with Terminal.
+	TerminalLayout string `json:"terminal_layout,omitempty"`
+	// Terminal names the terminal provider to use for the session (e.g. "zellij").
+	Terminal string `json:"terminal,omitempty"`
+}
+
+// TerminalStatus reports the health of a single terminal provider.
+type TerminalStatus struct {
+	Name      string `json:"name"`
+	Installed bool   `json:"installed"`
+	Binary    string `json:"binary,omitempty"`
+}
+
+// DoctorTerminalsResult holds health status for all registered terminal providers.
+type DoctorTerminalsResult struct {
+	Terminals []TerminalStatus `json:"terminals"`
 }
 
 type UpgradeAgentParams struct {
@@ -100,9 +127,32 @@ type ExecInSessionParams struct {
 	AgentID   string `json:"agent_id"`
 	SessionID string `json:"session_id"`
 	Prompt    string `json:"prompt"`
+	// LiveOnly skips execution and returns an error when the session is not
+	// currently attached. When false (default) the operator auto-resumes the
+	// agent before executing.
+	LiveOnly bool `json:"live_only,omitempty"`
 }
 
 type ExecInSessionResult struct {
+	SessionID string `json:"session_id"`
+}
+
+type StopSessionParams struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id,omitempty"`
+	Force     bool   `json:"force,omitempty"`
+}
+
+type StopSessionResult struct {
+	SessionID string `json:"session_id"`
+}
+
+type DetachSessionParams struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+type DetachSessionResult struct {
 	SessionID string `json:"session_id"`
 }
 
@@ -202,5 +252,17 @@ type Operator interface {
 	SwitchProvider(SwitchProviderParams) error
 
 	ExecInSession(ExecInSessionParams) (*ExecInSessionResult, error)
+	StopSession(StopSessionParams) (*StopSessionResult, error)
+	DetachSession(DetachSessionParams) (*DetachSessionResult, error)
 	Pipe(PipeParams) error
+
+	// ListTemplates returns the short-names of all embedded agent templates.
+	ListTemplates() ([]string, error)
+
+	// DoctorTerminals checks whether each registered terminal provider binary
+	// is present on the system.
+	DoctorTerminals() (*DoctorTerminalsResult, error)
+
+	// InstallTerminal runs the install procedure for the named terminal provider.
+	InstallTerminal(name string) error
 }

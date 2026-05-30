@@ -1,7 +1,12 @@
 COMPOSE_FILE := development/docker-compose.yaml
 VERSION      ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo "dev")
 
-.PHONY: build install uninstall release snapshot docker-build docker-up docker-down docker-rebuild docker-relaunch docker-connect dev-preflight
+.PHONY: build install uninstall release snapshot docker-build docker-up docker-down docker-rebuild docker-relaunch docker-connect dev-preflight tools
+
+# ── tools ────────────────────────────────────────────────────────────────────
+
+tools:
+	go install github.com/goreleaser/goreleaser/v2@latest
 
 # ── release ───────────────────────────────────────────────────────────────────
 
@@ -40,7 +45,8 @@ docker-build:
 	docker compose -f $(COMPOSE_FILE) build --build-arg VERSION=$(VERSION)
 
 docker-up:
-	docker compose -f $(COMPOSE_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) up -d --wait
+	docker compose -f $(COMPOSE_FILE) exec ubuntu bash -l
 
 docker-down:
 	docker compose -f $(COMPOSE_FILE) down

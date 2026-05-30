@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	pkglog "github.com/Shaik-Sirajuddin/memory/pkg/log"
+	"github.com/Shaik-Sirajuddin/memory/pkg/sockpath"
 )
 
 var Version = "dev"
@@ -34,12 +35,12 @@ func main() {
 	mux := &ServiceMux{
 		PTYDaemon: PTYDaemonConfig{
 			ServiceConfig: ServiceConfig{Enabled: !*disablePTY},
-			SocketPath:    envOr("OMNI_PTY_SOCKET", "/run/omni-"+username+"/omni-pty.sock"),
+			SocketPath:    sockpath.PTY(),
 			DBPath:        envOr("PTYDAEMON_DB", "/var/lib/omni-"+username+"/ptydaemon.db"),
 		},
 		HookOperator: HookOperatorConfig{
 			ServiceConfig: ServiceConfig{Enabled: !*disableHook},
-			SocketPath:    envOr("HOOK_OPERATOR_SOCKET", "/run/omni-"+username+"/hook-operator.sock"),
+			SocketPath:    sockpath.HookOperator(),
 		},
 		AxolinkMCP: AxolinkMCPConfig{
 			ServiceConfig: ServiceConfig{Enabled: !*disableMCP},
