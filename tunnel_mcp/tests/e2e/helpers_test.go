@@ -120,6 +120,14 @@ func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	return stop, buf
 }
 
+// newCtx returns a context that is cancelled when the test ends.
+func newCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // runOmni executes an omni subcommand and returns the output.
 // It fails the test if the exit code is non-zero.
 func runOmni(t *testing.T, cfg testConfig, args ...string) string {
