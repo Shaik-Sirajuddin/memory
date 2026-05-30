@@ -360,6 +360,10 @@ func (e *ProcessingEngine) bootstrapAgent(agentID string) bool {
 // executeLoop is the lifecycle-aware dispatch loop: checks interruption and running
 // state, then pick → mark queued → build prompt → exec.
 func (e *ProcessingEngine) executeLoop(agentID string) {
+	if agentID == "" {
+		logger.Error("execute loop: empty agent_id, skipping")
+		return
+	}
 	ctx := e.ctx
 	agentState, ok := e.state.GetAgent(agentID)
 
