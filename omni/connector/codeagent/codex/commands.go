@@ -161,76 +161,82 @@ func verifySessionExists(workDir, binPath, sessionID string) error {
 	return nil
 }
 
-// bootstrapSession runs `codex exec "." --json` briefly to register a real
-// codex session and capture its thread_id from the first JSON line:
+// bootstrapSession starts `codex exec "." --json` to register a new codex
+// session, then discovers the assigned session ID by watching the session
+// index (~/.codex/session_index.jsonl) for a new entry.
 //
-//	{"type":"thread.started","thread_id":"<id>"}
+// To avoid a race with other concurrent Codex sessions, we fingerprint the
+// target session using three constraints applied together:
+//  1. The entry must not exist in the pre-bootstrap snapshot (it is new).
+//  2. Its UpdatedAt timestamp must be >= startTime (created after we started).
+//  3. Its Cwd (read from the session file) must match workDir.
 //
-// The process is killed as soon as the thread_id is found so we don't wait
-// for the full exec to finish.
+// Together these make a false-positive match essentially impossible without
+// relying on any Codex CLI flag that may not be available.
 func bootstrapSession(workDir, binPath, model string, env []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	startTime := time.Now()
+
+	// Snapshot existing session IDs before we start.
+	existing, _ := readSessionIndex()
+	seen := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		seen[e.ID] = true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// No -m flag here: we only need the thread_id, and some models (e.g. o4-mini)
-	// are unsupported for certain account types and would cause codex to exit
-	// before emitting the thread.started line.
 	args := []string{"exec", ".", "--json", "-C", workDir}
-
 	logger.Info("bootstrapSession: running command", "bin", binPath, "args", args)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = workDir
 	cmd.Env = env
-
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("bootstrap: start: %w", err)
 	}
 
-	// Poll output until we see the thread.started line or timeout.
+	// Poll the session index. Match only sessions that are:
+	//   - new (not in pre-bootstrap snapshot)
+	//   - created at or after startTime
+	//   - have a Cwd matching workDir
 	id := ""
-	deadline := time.Now().Add(6 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-		id = parseBootstrapSessionID(buf.String())
+		time.Sleep(150 * time.Millisecond)
+		entries, err := readSessionIndex()
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.ID == "" || seen[e.ID] {
+				continue
+			}
+			// Timestamp guard: skip sessions that pre-date our bootstrap start.
+			if t, parseErr := time.Parse(time.RFC3339Nano, e.UpdatedAt); parseErr == nil && t.Before(startTime) {
+				continue
+			}
+			// Cwd guard: confirm the session file's working directory matches.
+			meta, metaErr := readSessionMeta(e.ID)
+			if metaErr != nil || meta.Cwd != workDir {
+				continue
+			}
+			id = e.ID
+			break
+		}
 		if id != "" {
 			break
 		}
 	}
 
-	// Kill the exec process — we have the ID, no need to wait for full execution.
 	cancel()
 	_ = cmd.Wait()
 
-	logger.Debug("bootstrapSession: completed", "sessionID", id, "outputLen", buf.Len())
+	logger.Debug("bootstrapSession: completed", "sessionID", id)
 	return id, nil
-}
-
-// parseBootstrapSessionID reads the thread_id from codex --json exec output:
-//
-//	{"type":"thread.started","thread_id":"<id>"}
-func parseBootstrapSessionID(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, `"thread.started"`) && strings.Contains(line, `"thread_id"`) {
-			// Fast path: extract value between `"thread_id":"` and next `"`
-			const key = `"thread_id":"`
-			idx := strings.Index(line, key)
-			if idx == -1 {
-				continue
-			}
-			rest := line[idx+len(key):]
-			end := strings.Index(rest, `"`)
-			if end > 0 {
-				return rest[:end]
-			}
-		}
-	}
-	return ""
 }
 
 type ptyMetaAttached interface {
