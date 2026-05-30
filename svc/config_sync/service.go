@@ -327,8 +327,7 @@ func defaultHooks(binaryPath string) []defaultHook {
 		{Name: "omni." + string(codehooks.PreToolUse), Event: codehooks.PreToolUse, Entry: cmd(codehooks.PreToolUse)},
 		{Name: "omni." + string(codehooks.PostToolUse), Event: codehooks.PostToolUse, Entry: cmd(codehooks.PostToolUse)},
 		{Name: "omni." + string(codehooks.PostToolUseFailure), Event: codehooks.PostToolUseFailure, Entry: cmd(codehooks.PostToolUseFailure)},
-		{Name: "omni." + string(codehooks.PreSessionStart), Event: codehooks.PreSessionStart, Entry: cmd(codehooks.PreSessionStart)},
-		{Name: "omni." + string(codehooks.PostSessionStart), Event: codehooks.PostSessionStart, Entry: cmd(codehooks.PostSessionStart)},
+		{Name: "omni." + string(codehooks.SessionStart), Event: codehooks.SessionStart, Entry: cmd(codehooks.SessionStart)},
 		{Name: "omni." + string(codehooks.PrePrompt), Event: codehooks.PrePrompt, Entry: cmd(codehooks.PrePrompt)},
 		{Name: "omni." + string(codehooks.PostPrompt), Event: codehooks.PostPrompt, Entry: cmd(codehooks.PostPrompt)},
 	}

@@ -24,6 +24,7 @@ import (
 	omnisandbox "github.com/Shaik-Sirajuddin/memory/sandbox"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
 	"github.com/Shaik-Sirajuddin/memory/store/codesession"
+	"github.com/Shaik-Sirajuddin/memory/mcp/mcp/runner"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
 	"github.com/spf13/cobra"
@@ -69,6 +70,7 @@ func EntrypointWithVersion(op operator.Operator, resolver config.OmniConfigResol
 	root.AddCommand(c.newTeamInitCommand())
 	root.AddCommand(c.newDoctorCommand())
 	root.AddCommand(c.newServerCommand())
+	root.AddCommand(c.newAxoLinkCommand())
 
 	c.root = root
 	return c
@@ -758,6 +760,10 @@ func (c *DefaultCli) newAgentDeleteCommand() *cobra.Command {
 				}
 				resolved.ID = id
 			}
+			_, _ = c.operator.StopSession(operator.StopSessionParams{
+				AgentID: resolved.ID,
+				Force:   true,
+			})
 			return c.operator.DeleteAgent(operator.DeleteAgentParams{ID: resolved.ID})
 		},
 	}
@@ -1062,6 +1068,18 @@ func (c *DefaultCli) newAgentSandboxSyncCommand() *cobra.Command {
 	cmd.Flags().StringP("provider", "p", flags.Provider, "Provider used to resolve sandbox defaults")
 	cmd.Flags().StringP("output", "o", flags.Output, "Output format: table|yaml|json")
 	return cmd
+}
+
+func (c *DefaultCli) newAxoLinkCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "axo-link",
+		Short: "Start the axo-link MCP service (stdio transport)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := runner.DefaultConfig()
+			cfg.Transport = runner.TransportStdio
+			return runner.Run(cmd.Context(), cfg)
+		},
+	}
 }
 
 func (c *DefaultCli) resolveAgentIDByName(workspace, name string) (string, error) {

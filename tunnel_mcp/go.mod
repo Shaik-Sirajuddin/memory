@@ -12,7 +12,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/docker/docker v28.5.2+incompatible // test-only: e2e Docker SDK executor
 	github.com/google/uuid v1.6.0
-	github.com/mark3labs/mcp-go v0.54.0
+	github.com/mark3labs/mcp-go v0.54.1
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.50.1

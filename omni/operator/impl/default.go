@@ -21,6 +21,7 @@ import (
 	claudesettings "github.com/Shaik-Sirajuddin/memory/connector/codeagent/claude/settings"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex"
 	codexsettings "github.com/Shaik-Sirajuddin/memory/connector/codeagent/codex/settings"
+	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/gemini"
 	"github.com/Shaik-Sirajuddin/memory/omniagent"
 	operator "github.com/Shaik-Sirajuddin/memory/operator"
 	"github.com/Shaik-Sirajuddin/memory/operator/impl/defaults"
@@ -38,11 +39,8 @@ import (
 const (
 	providerClaude codeagent.Provider = "claude"
 	providerCodex  codeagent.Provider = "codex"
-<<<<<<< HEAD
 	providerGemini codeagent.Provider = "gemini"
 	providerAgy    codeagent.Provider = "agy"
-=======
->>>>>>> 7ab8fe65538f98d26d419030776e300a3622c8a9
 
 	mcpAuthToken  = "tunnel-mcp-dev-token"
 	mcpSenderType = "omni_agent"
