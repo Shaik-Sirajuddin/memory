@@ -3,6 +3,7 @@ module github.com/Shaik-Sirajuddin/memory
 go 1.26.1
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/Shaik-Sirajuddin/memory/pkg/log v0.0.0
 	github.com/Shaik-Sirajuddin/memory/svc/ptydaemon v0.0.0
 	github.com/adrg/xdg v0.5.3

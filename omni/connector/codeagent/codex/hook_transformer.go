@@ -30,31 +30,43 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 	if _, ok := t.index[name]; ok {
 		return false
 	}
-	event := resolveEventName(name, entry)
-	if !supportedEvent(event) {
+	omniEvent := resolveEventName(name, entry)
+	codexEvent, ok := codexEventName(omniEvent)
+	if !ok {
 		return false
 	}
 
-	globalDir, err := globalCodexDir()
+	def := omniEntryToHookDef(entry)
+	if def == nil {
+		return false // URL-only entries not expressible as Codex command hooks
+	}
+
+	configPath, err := globalConfigPath()
 	if err != nil {
 		return false
 	}
-	filePath := globalDir + "/hooks.json"
-
-	hf, err := readHooksFile(filePath)
+	hooksByEvent, err := readHooksConfig(configPath)
 	if err != nil {
 		return false
 	}
 
-	uid := name
-	newEntry := configEntryToCodex(uid, event, entry)
-	for _, e := range hf.Hooks {
-		if sameCodexEntry(e, newEntry) {
-			return false
+	// Deduplicate by command string.
+	for _, m := range hooksByEvent[codexEvent] {
+		for _, d := range m.Hooks {
+			if d.Command == def.Command {
+				return false
+			}
 		}
 	}
-	hf.Hooks = append(hf.Hooks, newEntry)
-	if err := writeHooksFile(filePath, hf); err != nil {
+
+	if hooksByEvent == nil {
+		hooksByEvent = map[string][]codexHookMatcher{}
+	}
+	hooksByEvent[codexEvent] = append(hooksByEvent[codexEvent], codexHookMatcher{
+		Hooks: []codexHookDef{*def},
+	})
+
+	if err := writeHooksConfig(configPath, hooksByEvent); err != nil {
 		return false
 	}
 
@@ -64,46 +76,59 @@ func (t *codexHookTransformer) Add(name string, entry omniconfig.HookEntry) bool
 }
 
 func (t *codexHookTransformer) GetHooks() []confhooks.Hook {
-	globalDir, err := globalCodexDir()
+	configPath, err := globalConfigPath()
 	if err != nil {
 		return nil
 	}
-	filePath := globalDir + "/hooks.json"
-
-	hf, err := readHooksFile(filePath)
+	hooksByEvent, err := readHooksConfig(configPath)
 	if err != nil {
 		return nil
 	}
 
-	out := []confhooks.Hook{}
-	for i, e := range hf.Hooks {
-		if !supportedEvent(e.Event) {
+	var out []confhooks.Hook
+	for codexEvent, matchers := range hooksByEvent {
+		omniEvent, ok := omniEventFromCodex(codexEvent)
+		if !ok {
 			continue
 		}
-		entry := codexEntryToConfig(e)
-		out = append(out, confhooks.Hook{
-			Name:    fmt.Sprintf("codex.global.%s.%d", e.Event, i),
-			Entry:   entry,
-			Schemas: schemaForEvent(e.Event),
-		})
+		for i, m := range matchers {
+			for j, def := range m.Hooks {
+				out = append(out, confhooks.Hook{
+					Name:    fmt.Sprintf("codex.global.%s.%d.%d", codexEvent, i, j),
+					Entry:   hookDefToOmniEntry(def),
+					Schemas: schemaForEvent(omniEvent),
+				})
+			}
+		}
 	}
 	return out
 }
 
 func (t *codexHookTransformer) GetHookResponse(eventName string, payload any) (confhooks.HookResponseSchema, error) {
-	response, err := parseCodexHookPayload(eventName, payload)
+	omniEvent := toOmniEvent(eventName)
+	response, err := parseCodexHookPayload(omniEvent, payload)
 	if err != nil {
 		return confhooks.HookResponseSchema{}, err
 	}
-	return confhooks.HookResponseSchema{EventName: eventName, Response: response}, nil
+	return confhooks.HookResponseSchema{EventName: omniEvent, Response: response}, nil
 }
 
 func (t *codexHookTransformer) GetHookResult(eventName string, raw any) (confhooks.HookResultSchema, error) {
-	response, err := parseCodexHookPayload(eventName, raw)
+	omniEvent := toOmniEvent(eventName)
+	response, err := parseCodexHookPayload(omniEvent, raw)
 	if err != nil {
 		return confhooks.HookResultSchema{}, err
 	}
-	return confhooks.HookResultSchema{EventName: eventName, Result: response}, nil
+	return confhooks.HookResultSchema{EventName: omniEvent, Result: response}, nil
+}
+
+// toOmniEvent normalises an incoming event name to the omni standard.
+// Accepts either a Codex CLI event name ("Stop") or an omni event name ("SessionEnd").
+func toOmniEvent(event string) string {
+	if omni, ok := omniEventFromCodex(event); ok {
+		return omni
+	}
+	return event
 }
 
 func parseCodexHookPayload(eventName string, raw any) (confhooks.Response, error) {
@@ -165,50 +190,52 @@ func responseFromOutput(output codehooks.HookOuput) confhooks.Response {
 }
 
 // ============================================================
-// omniconfig.HookEntry ↔ codexHookEntry conversion
+// omniconfig.HookEntry ↔ codexHookDef conversion
 // ============================================================
 
-func configEntryToCodex(uid, event string, entry omniconfig.HookEntry) codexHookEntry {
-	e := codexHookEntry{UID: uid, Event: event}
+// omniEntryToHookDef converts an omni HookEntry to a Codex hook definition.
+// Returns nil for URL-only entries — Codex CLI only supports command hooks.
+//
+// Limitation: codexHookDef.Command is a single shell string (no separate Args
+// field). Command and Args are joined with spaces, so individual args that
+// contain spaces are not round-trip safe. All omni default hooks use simple
+// flag args (e.g. --event SessionStart) with no embedded spaces, so this is
+// acceptable for the current use case.
+func omniEntryToHookDef(entry omniconfig.HookEntry) *codexHookDef {
+	if entry.Command == nil {
+		return nil
+	}
+	parts := append([]string{*entry.Command}, entry.Args...)
+	def := &codexHookDef{Type: "command", Command: strings.Join(parts, " ")}
 	if entry.Timeout != nil {
-		e.Timeout = int(*entry.Timeout)
+		def.Timeout = int(*entry.Timeout)
 	}
-	if entry.Url != nil {
-		e.Url = entry.Url
-		return e
-	}
-	if entry.Command != nil {
-		e.Command = *entry.Command
-	}
-	e.Args = entry.Args
-	return e
+	return def
 }
 
-func codexEntryToConfig(e codexHookEntry) omniconfig.HookEntry {
+// hookDefToOmniEntry converts a Codex hook definition back to an omni HookEntry.
+// The Codex config stores command + args as one shell string; we split on
+// whitespace to restore the original Command + Args fields, preserving the
+// entryKey invariant used by the registrar's verify() check.
+// Args containing spaces are not supported (see omniEntryToHookDef).
+func hookDefToOmniEntry(def codexHookDef) omniconfig.HookEntry {
+	parts := strings.Fields(def.Command)
+	var cmd string
+	var args []string
+	if len(parts) > 0 {
+		cmd = parts[0]
+		args = parts[1:]
+	}
 	var timeout *float64
-	if e.Timeout > 0 {
-		t := float64(e.Timeout)
+	if def.Timeout > 0 {
+		t := float64(def.Timeout)
 		timeout = &t
 	}
-	if e.Url != nil {
-		return omniconfig.HookEntry{Url: e.Url, Timeout: timeout}
+	entry := omniconfig.HookEntry{Command: &cmd, Timeout: timeout}
+	if len(args) > 0 {
+		entry.Args = args
 	}
-	cmd := e.Command
-	return omniconfig.HookEntry{Command: &cmd, Args: e.Args, Timeout: timeout}
-}
-
-func sameCodexEntry(a, b codexHookEntry) bool {
-	return a.Event == b.Event &&
-		a.Command == b.Command &&
-		a.Timeout == b.Timeout &&
-		ptrStringEq(a.Url, b.Url)
-}
-
-func ptrStringEq(a, b *string) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
+	return entry
 }
 
 // ============================================================
@@ -230,18 +257,10 @@ func resolveEventName(name string, entry omniconfig.HookEntry) string {
 	return name
 }
 
+// supportedEvent returns true when omniEvent has a Codex CLI equivalent.
 func supportedEvent(event string) bool {
-	switch event {
-	case string(codehooks.PreToolUse),
-		string(codehooks.PostToolUse),
-		string(codehooks.PostToolUseFailure),
-		string(codehooks.SessionStart),
-		string(codehooks.SessionEnd),
-		string(codehooks.PrePrompt),
-		string(codehooks.PostPrompt):
-		return true
-	}
-	return false
+	_, ok := codexEventName(event)
+	return ok
 }
 
 func schemaForEvent(event string) confhooks.HookSchema {

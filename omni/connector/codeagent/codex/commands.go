@@ -84,6 +84,11 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 		logger.Warn("Create: could not sync model to config", "err", syncErr)
 	}
 
+	// Auto-approve tunnel_mcp tool calls so Codex never pauses for MCP approval.
+	if mcpErr := ensureMCPApprovalMode("tunnel_mcp"); mcpErr != nil {
+		logger.Warn("Create: could not set MCP approval mode", "err", mcpErr)
+	}
+
 	// If the caller supplies a prior session ID, attach to it by verifying codex
 	// can resume it. This re-uses an existing conversation rather than starting fresh.
 	var sessionID string
@@ -172,41 +177,46 @@ func bootstrapSession(workDir, binPath, model string, env []string) (string, err
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	// No -m flag here: we only need the thread_id, and some models (e.g. o4-mini)
-	// are unsupported for certain account types and would cause codex to exit
-	// before emitting the thread.started line.
-	args := []string{"exec", ".", "--json", "-C", workDir}
-
+	args := []string{"exec", ".", "--json", "--skip-git-repo-check", "-C", workDir}
 	logger.Info("bootstrapSession: running command", "bin", binPath, "args", args)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = workDir
 	cmd.Env = env
+	cmd.Stderr = io.Discard
 
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("bootstrap: stdout pipe: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("bootstrap: start: %w", err)
 	}
 
-	// Poll output until we see the thread.started line or timeout.
-	id := ""
-	deadline := time.Now().Add(6 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-		id = parseBootstrapSessionID(buf.String())
-		if id != "" {
-			break
+	// Read lines as they arrive — no polling, no buffering delay.
+	// Stop as soon as thread_id is found.
+	found := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			if id := parseBootstrapSessionID(scanner.Text()); id != "" {
+				found <- id
+				return
+			}
 		}
+		close(found)
+	}()
+
+	var id string
+	select {
+	case id = <-found:
+	case <-ctx.Done():
 	}
 
-	// Kill the exec process — we have the ID, no need to wait for full execution.
 	cancel()
 	_ = cmd.Wait()
 
-	logger.Debug("bootstrapSession: completed", "sessionID", id, "outputLen", buf.Len())
+	logger.Debug("bootstrapSession: completed", "sessionID", id)
 	return id, nil
 }
 

@@ -4,12 +4,17 @@ services:
       context: ..
       dockerfile: development/docker/Dockerfile
     image: omni-dev:latest
-    container_name: omni-dev
     privileged: true                  # required for systemd PID 1
     tmpfs:
       - /run
       - /run/lock
       - /tmp
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/omni-root/omni-pty.sock"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+      start_period: 30s
     volumes:
       - omni-persist:/var/lib/omni-root
       - omni-auth:/root/.config
@@ -19,6 +24,7 @@ services:
       - ./local/agents/tests-claude-2:/build/memory/agents/tests-claude-2 # e2e test agent workspace
       - agent-claude:/root/.claude
       - agent-codex:/root/.codex
+      - ./local/.codex/auth.json:/root/.codex/auth.json:ro
       - agent-gemini:/root/.gemini
     env_file:
       - path: ./.env.docker
