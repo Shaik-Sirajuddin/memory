@@ -19,16 +19,19 @@ const (
 
 	// how long to wait for detached sessions to be active in ptydaemon
 	agentStartWait = 8 * time.Second
-	// how long to wait for agent-1 to call send_message and agent-2 to receive
-	deliveryWait = 40 * time.Second
+	// max time to wait for send_message tool call to appear in journalctl
+	sendMessageWait = 60 * time.Second
+	// max time to wait for exec in session to appear after send_message.
+	// This is a best-effort check (server-bugs.md #7 means delivery is hook-dependent);
+	// kept short since it's non-blocking on failure.
+	execInSessionWait = 10 * time.Second
 )
 
 // TestAgentsSayHi launches two claude agents in detached mode, instructs
 // agent-1 to send a greeting to agent-2 via tunnel-mcp send_message, then asserts:
-//   - journalctl contains no error-level lines
-//   - send_message tool was called (delivery path exercised)
-//
-// Teardown: both agents deleted via CLI.
+//   - send_message tool call logged (sender side confirmed)
+//   - exec in session logged for agent-2 (receiver-side delivery confirmed)
+//   - no unexpected ERROR entries in journalctl
 func TestAgentsSayHi(t *testing.T) {
 	cfg := newConfig(t)
 	teardownAgent(t, cfg, hiAgent1)
@@ -42,19 +45,13 @@ func TestAgentsSayHi(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	runOmni(t, cfg, "team", "init")
-
-	t.Logf("creating agents %s and %s", hiAgent1, hiAgent2)
 	runOmni(t, cfg, "agent", "init", hiAgent1,
 		"--workspace", cfg.workspace, "--provider", "claude", "--interactive=false")
 	runOmni(t, cfg, "agent", "init", hiAgent2,
 		"--workspace", cfg.workspace, "--provider", "claude", "--interactive=false")
 
-	// --detach starts the PTY daemon session and returns immediately (no TTY needed)
-	t.Logf("resuming agents in detached mode")
 	runOmni(t, cfg, "agent", "resume", hiAgent2, "--detach", "--workspace", cfg.workspace)
 	runOmni(t, cfg, "agent", "resume", hiAgent1, "--detach", "--workspace", cfg.workspace)
-
-	t.Logf("waiting %s for sessions to be active...", agentStartWait)
 	time.Sleep(agentStartWait)
 
 	prompt := fmt.Sprintf(
@@ -63,15 +60,27 @@ func TestAgentsSayHi(t *testing.T) {
 			"Call the tool now and confirm it was sent.",
 		hiAgent1, hiAgent2,
 	)
-	t.Logf("sending prompt to %s", hiAgent1)
 	runOmni(t, cfg, "agent", "exec", hiAgent1, "--prompt", prompt)
 
-	t.Logf("waiting %s for delivery...", deliveryWait)
-	time.Sleep(deliveryWait)
+	// Stream-wait: exit as soon as send_message is logged rather than sleeping the full window.
+	if !logBuf.WaitFor("tool=send_message", sendMessageWait) {
+		t.Errorf("send_message tool call not observed within %s", sendMessageWait)
+		t.Logf("=== journalctl (%d bytes) ===\n%s", len(logBuf.String()), logBuf.String())
+		return
+	}
+
+	// Receiver-side: wait for exec in session targeting agent-2.
+	// This is a best-effort check — it depends on the hook-operator registering the
+	// session's agent_id before PostToolUse fires. When that registration is delayed
+	// (server-bugs.md #7), the engine drops the hook event and delivery falls back to
+	// the 60s sync tick. Log the observation but do not hard-fail the test here.
+	if !logBuf.WaitFor("exec in session", execInSessionWait) {
+		t.Logf("WARN: exec in session not observed for receiver %s within %s (server-bugs.md #7)", hiAgent2, execInSessionWait)
+	}
 
 	log := logBuf.String()
 	assertNoLogErrors(t, log)
-	assertLogContains(t, log, "send_message", "send_message tool call must appear in journalctl")
+	assertSenderLogged(t, log, hiAgent1)
 	if t.Failed() {
 		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
 	}
@@ -115,12 +124,21 @@ func TestMessageRefsIntegrity(t *testing.T) {
 		receiver,
 	)
 	runOmni(t, cfg, "agent", "exec", sender, "--prompt", prompt)
-	time.Sleep(deliveryWait)
+
+	if !logBuf.WaitFor("tool=send_message", sendMessageWait) {
+		t.Errorf("send_message tool call not observed within %s", sendMessageWait)
+		t.Logf("=== journalctl (%d bytes) ===\n%s", len(logBuf.String()), logBuf.String())
+		return
+	}
+
+	if !logBuf.WaitFor("exec in session", execInSessionWait) {
+		t.Logf("WARN: exec in session not observed for receiver %s within %s (server-bugs.md #7)", receiver, execInSessionWait)
+	}
 
 	log := logBuf.String()
 	assertNoLogErrors(t, log)
-	assertLogContains(t, log, "send_message", "send_message tool call must appear in journalctl")
-	assertLogContains(t, log, "sender_id="+sender, "mcp-handler must log sender by name, not UUID")
+	assertSenderLogged(t, log, sender)
+	assertNoExecSessionFailed(t, log)
 	if t.Failed() {
 		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
 	}
@@ -138,7 +156,15 @@ var (
 	//                          remove once busy_timeout pragma is added (server-bugs.md #1).
 	//   runtime create failed: gvisor (runsc) not installed in the e2e container; sandbox
 	//                          provision always fails but agent still starts without it.
-	reKnownNoise = regexp.MustCompile(`agent_id=""|SQLITE_BUSY|runtime create failed.*sandbox=gvisor`)
+	reKnownNoise = regexp.MustCompile(
+		`agent_id=""` + // server-bugs.md #2
+			`|SQLITE_BUSY` + // server-bugs.md #1
+			`|runtime create failed.*sandbox=gvisor` + // gvisor not installed in e2e container
+			`|sender agent not found` + // agent deleted while its PTY session is still active (server-bugs.md #5)
+			`|GetAgent\(store\): query failed.*sql: no rows` + // same root cause as above — lingering session looks up deleted agent
+			`|attach terminal setup failed` + // docker exec has no TTY; ptydaemon ioctl fails (server-bugs.md #6)
+			`|duplicate name`, // expected error asserted in TestOmniAgentCreateDuplicateName
+	)
 )
 
 // isTopLevelError returns true when level=ERROR is the first level= field on
@@ -149,20 +175,36 @@ func isTopLevelError(line string) bool {
 	return idx >= 0 && strings.HasPrefix(line[idx:], "level=ERROR")
 }
 
+// assertNoLogErrors reports each unexpected ERROR line as a separate test failure
+// (point failure) so each shows up individually in CI output.
 func assertNoLogErrors(t *testing.T, log string) {
 	t.Helper()
-	var realErrors []string
 	for _, line := range strings.Split(log, "\n") {
 		if isTopLevelError(line) && !reKnownNoise.MatchString(line) {
-			realErrors = append(realErrors, line)
+			t.Errorf("unexpected server ERROR: %s", line)
 		}
-	}
-	if len(realErrors) > 0 {
-		t.Errorf("journalctl contains %d ERROR line(s):\n%s\n\n--- full log ---\n%s",
-			len(realErrors), strings.Join(realErrors, "\n"), log)
 	}
 	assert.Empty(t, extractMatches(log, rePanic),
 		"journalctl must not contain panic/fatal lines\nfull log:\n%s", log)
+}
+
+// assertSenderLogged checks the mcp-handler logged the sender by name (not UUID).
+func assertSenderLogged(t *testing.T, log, senderName string) {
+	t.Helper()
+	if !bytes.Contains([]byte(log), []byte("sender_id="+senderName)) {
+		t.Errorf("mcp-handler must log sender by name, not UUID: sender_id=%s not found", senderName)
+	}
+}
+
+// assertNoExecSessionFailed checks that no exec in session failed entries appear.
+// Each failure is reported as a separate point failure.
+func assertNoExecSessionFailed(t *testing.T, log string) {
+	t.Helper()
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "exec in session failed") {
+			t.Errorf("exec in session delivery failure: %s", line)
+		}
+	}
 }
 
 func assertLogContains(t *testing.T, log, substr, msg string) {

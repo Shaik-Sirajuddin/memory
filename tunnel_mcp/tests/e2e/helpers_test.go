@@ -5,9 +5,12 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type testConfig struct {
@@ -17,24 +20,33 @@ type testConfig struct {
 	container string
 }
 
+// newConfig creates an isolated test environment. Each test gets its own
+// workspace directory under /tmp inside the container so tests never touch
+// /build or the real agents (guide, tagy, tclaude, tecodex).
+// Override with OMNI_WORKSPACE env var when a fixed path is required.
 func newConfig(t *testing.T) testConfig {
 	t.Helper()
 	target := envOr("E2E_TARGET", "docker")
-	ctr := envOr("E2E_CONTAINER", "omni-dev")
+	ctr := envOr("E2E_CONTAINER", "development-ubuntu-1")
 
-	var ex CommandExecutor
+	var baseEx CommandExecutor
 	switch target {
 	case "local":
-		ex = &HostExecutor{}
+		baseEx = &HostExecutor{}
 	default:
-		ex = newDockerExecutor(t, ctr)
+		baseEx = newDockerExecutor(t, ctr)
 	}
 
-	workspace := envOr("OMNI_WORKSPACE", "/build")
-	if target == "local" {
-		if wd, err := os.Getwd(); err == nil {
-			workspace = envOr("OMNI_WORKSPACE", wd)
-		}
+	workspace := os.Getenv("OMNI_WORKSPACE")
+	if workspace == "" {
+		workspace = provisionWorkspace(t, baseEx)
+	}
+
+	// Pin the working directory to the isolated workspace so commands like
+	// `omni team init` (which use os.Getwd()) operate in the right place.
+	var ex CommandExecutor = baseEx
+	if de, ok := baseEx.(*DockerExecutor); ok {
+		ex = de.WithWorkDir(workspace)
 	}
 
 	return testConfig{
@@ -43,6 +55,26 @@ func newConfig(t *testing.T) testConfig {
 		workspace: workspace,
 		container: ctr,
 	}
+}
+
+// provisionWorkspace creates a fresh temp directory inside the container and
+// registers a cleanup to remove it when the test finishes.
+func provisionWorkspace(t *testing.T, ex CommandExecutor) string {
+	t.Helper()
+	// Use a name derived from the test name so it's easy to spot in logs.
+	safe := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	dir := fmt.Sprintf("/tmp/e2e-%s", safe)
+
+	ctx := context.Background()
+	code, _, _ := ex.RunCommand(ctx, []string{"mkdir", "-p", dir})
+	if code != 0 {
+		t.Fatalf("provisionWorkspace: could not create %s", dir)
+	}
+	t.Cleanup(func() {
+		// Best-effort cleanup — /tmp is tmpfs and wiped on container restart anyway.
+		_, _, _ = ex.RunCommand(context.Background(), []string{"rm", "-rf", dir})
+	})
+	return dir
 }
 
 func envOr(key, def string) string {
@@ -76,10 +108,24 @@ func (b *syncBuffer) Bytes() []byte {
 	return append([]byte(nil), b.buf.Bytes()...)
 }
 
-// captureLog starts streaming `journalctl -fu omni@root` via the executor into
-// a buffer. Returns a stop func (cancels the stream, waits for goroutine) and
-// the live buffer. Always called first in each test — journalctl is the primary
-// observation pipe.
+// WaitFor polls the buffer every 500ms until substr appears or timeout expires.
+func (b *syncBuffer) WaitFor(substr string, timeout time.Duration) bool {
+	needle := []byte(substr)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		b.mu.Lock()
+		found := bytes.Contains(b.buf.Bytes(), needle)
+		b.mu.Unlock()
+		if found {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
+}
+
+// captureLog starts streaming journalctl (omni-server identifier) into a buffer.
+// Returns a stop func and the live buffer. Always called first in each test.
 func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	t.Helper()
 	buf = &syncBuffer{}
@@ -88,7 +134,8 @@ func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-f", "--no-pager", "-t", "omni-server"})
+		// --lines=0 prevents replaying recent history from prior tests.
+		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-f", "--no-pager", "--lines=0", "-t", "omni-server"})
 	}()
 
 	stop = func() {
@@ -97,6 +144,14 @@ func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	}
 	t.Cleanup(stop)
 	return stop, buf
+}
+
+// newCtx returns a context that is cancelled when the test ends.
+func newCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // runOmni executes an omni subcommand and returns the output.
@@ -120,11 +175,6 @@ func runOmniAllowFail(t *testing.T, cfg testConfig, args ...string) (string, int
 	exitCode, out, _ := cfg.exec.RunCommand(context.Background(), cmd)
 	t.Logf("omni %v → exit=%d\n%s", args, exitCode, out)
 	return string(out), exitCode
-}
-
-// logContains checks if the journalctl buffer contains the pattern.
-func logContains(buf *syncBuffer, pattern string) bool {
-	return bytes.Contains(buf.Bytes(), []byte(pattern))
 }
 
 // teardownAgent deletes an agent by name via CLI. Safe to call in t.Cleanup.
