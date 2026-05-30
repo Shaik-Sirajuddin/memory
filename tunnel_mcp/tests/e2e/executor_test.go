@@ -87,6 +87,9 @@ func newDockerExecutor(t *testing.T, containerName string) *DockerExecutor {
 	// file and would forward them to every subprocess spawned by docker exec.
 	// Paths must match development/docker/entrypoint.sh.
 	env := []string{
+		// docker exec doesn't inherit the container's login PATH — set it explicitly
+		// so agent binaries (claude, codex, gemini) are found under /usr/local/bin.
+		"PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"OMNI_PTY_SOCKET=/run/omni-root/omni-pty.sock",
 		"HOOK_OPERATOR_SOCKET=/run/omni-root/hook-operator.sock",
 	}

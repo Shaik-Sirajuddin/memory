@@ -12,7 +12,7 @@ const (
 	execTestAgent  = "e2e-exec-test"
 	codexTestAgent = "e2e-codex-test"
 	execStartWait  = 10 * time.Second
-	execPromptWait = 30 * time.Second
+	execPromptWait = 45 * time.Second // max wait for exec in session to appear
 )
 
 // TestAgentExecNoSession verifies that resuming an agent with --detach then
@@ -35,13 +35,17 @@ func TestAgentExecNoSession(t *testing.T) {
 
 	out := runOmni(t, cfg, "agent", "exec", execTestAgent,
 		"--prompt", "reply with the single word: pong")
-	time.Sleep(execPromptWait)
+
+	// Stream-wait: accept either CLI confirmation or server-side ExecInSession log.
+	delivered := strings.Contains(out, "prompt sent") ||
+		logBuf.WaitFor("exec in session", execPromptWait)
+	if !delivered {
+		t.Errorf("prompt not delivered within %s; exec output=%q", execPromptWait, out)
+	}
 
 	log := logBuf.String()
 	assertNoLogErrors(t, log)
-	if !strings.Contains(out, "prompt sent") && !strings.Contains(log, "ExecInSession") {
-		t.Errorf("expected prompt delivery confirmation, got output=%q", out)
-	}
+	assertNoExecSessionFailed(t, log)
 	if t.Failed() {
 		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
 	}
@@ -67,13 +71,16 @@ func TestAgentResumeDetached(t *testing.T) {
 
 	out := runOmni(t, cfg, "agent", "exec", name,
 		"--prompt", "reply with the single word: pong")
-	time.Sleep(execPromptWait)
+
+	delivered := strings.Contains(out, "prompt sent") ||
+		logBuf.WaitFor("exec in session", execPromptWait)
+	if !delivered {
+		t.Errorf("prompt not delivered within %s; exec output=%q", execPromptWait, out)
+	}
 
 	log := logBuf.String()
 	assertNoLogErrors(t, log)
-	if !strings.Contains(out, "prompt sent") && !strings.Contains(log, "ExecInSession") {
-		t.Errorf("expected prompt delivery confirmation, got output=%q", out)
-	}
+	assertNoExecSessionFailed(t, log)
 	if t.Failed() {
 		t.Logf("=== journalctl (%d bytes) ===\n%s", len(log), log)
 	}

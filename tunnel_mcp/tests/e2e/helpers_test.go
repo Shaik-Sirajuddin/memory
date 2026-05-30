@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 )
 
 type testConfig struct {
@@ -20,7 +21,7 @@ type testConfig struct {
 func newConfig(t *testing.T) testConfig {
 	t.Helper()
 	target := envOr("E2E_TARGET", "docker")
-	ctr := envOr("E2E_CONTAINER", "omni-dev")
+	ctr := envOr("E2E_CONTAINER", "development-ubuntu-1")
 
 	var ex CommandExecutor
 	switch target {
@@ -76,10 +77,26 @@ func (b *syncBuffer) Bytes() []byte {
 	return append([]byte(nil), b.buf.Bytes()...)
 }
 
-// captureLog starts streaming `journalctl -fu omni@root` via the executor into
-// a buffer. Returns a stop func (cancels the stream, waits for goroutine) and
-// the live buffer. Always called first in each test — journalctl is the primary
-// observation pipe.
+// WaitFor polls the buffer every 500ms until substr appears or timeout expires.
+// Returns true if found. Use this instead of time.Sleep + String() so tests
+// exit as soon as the expected log line arrives rather than waiting the full window.
+func (b *syncBuffer) WaitFor(substr string, timeout time.Duration) bool {
+	needle := []byte(substr)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		b.mu.Lock()
+		found := bytes.Contains(b.buf.Bytes(), needle)
+		b.mu.Unlock()
+		if found {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
+}
+
+// captureLog starts streaming journalctl (omni-server identifier) into a buffer.
+// Returns a stop func and the live buffer. Always called first in each test.
 func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	t.Helper()
 	buf = &syncBuffer{}
@@ -88,7 +105,8 @@ func captureLog(t *testing.T, cfg testConfig) (stop func(), buf *syncBuffer) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-f", "--no-pager", "-t", "omni-server"})
+		// --lines=0 prevents replaying recent history from prior tests.
+		_ = cfg.exec.StreamCommand(ctx, buf, []string{"journalctl", "-f", "--no-pager", "--lines=0", "-t", "omni-server"})
 	}()
 
 	stop = func() {
@@ -120,11 +138,6 @@ func runOmniAllowFail(t *testing.T, cfg testConfig, args ...string) (string, int
 	exitCode, out, _ := cfg.exec.RunCommand(context.Background(), cmd)
 	t.Logf("omni %v → exit=%d\n%s", args, exitCode, out)
 	return string(out), exitCode
-}
-
-// logContains checks if the journalctl buffer contains the pattern.
-func logContains(buf *syncBuffer, pattern string) bool {
-	return bytes.Contains(buf.Bytes(), []byte(pattern))
 }
 
 // teardownAgent deletes an agent by name via CLI. Safe to call in t.Cleanup.
