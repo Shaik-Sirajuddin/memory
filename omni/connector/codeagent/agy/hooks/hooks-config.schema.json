@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "agy-code-hooks-config",
-  "description": "Schema for hooks section in Agy Code settings.json. Config paths: global=~/.agy/settings.json, project=.agy/settings.json, local=.agy/settings.local.json",
+  "description": "Schema for hooks in Agy Code hooks.json. Config paths: global=~/.gemini/config/hooks.json, project=.agents/hooks.json",
   "type": "object",
   "properties": {
     "hooks": {
