@@ -21,7 +21,10 @@ type testConfig struct {
 func newConfig(t *testing.T) testConfig {
 	t.Helper()
 	target := envOr("E2E_TARGET", "docker")
-	ctr := envOr("E2E_CONTAINER", "development-ubuntu-1")
+	// omni-e2e-ubuntu-1 is the dedicated test container started with:
+	//   docker compose -p omni-e2e up -d  (from development/)
+	// It runs independently of the dev container (development-ubuntu-1).
+	ctr := envOr("E2E_CONTAINER", "omni-e2e-ubuntu-1")
 
 	var ex CommandExecutor
 	switch target {
