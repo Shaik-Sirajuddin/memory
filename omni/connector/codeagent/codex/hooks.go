@@ -313,11 +313,14 @@ func ensureMCPApprovalMode(serverName string) error {
 	}
 	mcpServers, _ := raw["mcp_servers"].(map[string]interface{})
 	if mcpServers == nil {
-		mcpServers = map[string]interface{}{}
+		// No mcp_servers section — nothing to patch.
+		return nil
 	}
 	server, _ := mcpServers[serverName].(map[string]interface{})
 	if server == nil {
-		server = map[string]interface{}{}
+		// Server entry absent — skip rather than creating a transport-less stub
+		// that Codex would reject as "invalid transport".
+		return nil
 	}
 
 	// Set server-level default.
@@ -354,12 +357,16 @@ func codexEventName(omniEvent string) (string, bool) {
 		return "PreToolUse", true
 	case string(codehooks.PostToolUse):
 		return "PostToolUse", true
+	case string(codehooks.PostToolUseFailure):
+		return "PostToolUseFailure", true
 	case string(codehooks.SessionStart):
 		return "SessionStart", true
 	case string(codehooks.SessionEnd):
 		return "Stop", true
 	case string(codehooks.PrePrompt):
 		return "UserPromptSubmit", true
+	case string(codehooks.PostPrompt):
+		return "Stop", true
 	default:
 		return "", false
 	}
@@ -371,6 +378,8 @@ func omniEventFromCodex(codexEvent string) (string, bool) {
 		return string(codehooks.PreToolUse), true
 	case "PostToolUse":
 		return string(codehooks.PostToolUse), true
+	case "PostToolUseFailure":
+		return string(codehooks.PostToolUseFailure), true
 	case "SessionStart":
 		return string(codehooks.SessionStart), true
 	case "Stop":
