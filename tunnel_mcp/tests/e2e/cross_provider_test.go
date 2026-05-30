@@ -27,11 +27,13 @@ func TestCodexSaysHiToClaude(t *testing.T) {
 	cfg := newConfig(t)
 	teardownAgent(t, cfg, codexAgent)
 	teardownAgent(t, cfg, claudeAgent)
-	// MCP identity works (sender_id/type correctly sent). But codex only sees `health`
-	// in its MCP tool list — `send_message` is not advertised by the tunnel-mcp
-	// streamable HTTP server to codex clients. Claude sees it fine. Server-side
-	// tools/list response investigation pending with codex-connector team.
-	t.Skip("blocked: send_message not in codex MCP tool list — tunnel-mcp server tools/list investigation pending")
+	// codex v0.135.0 architectural limitation: [mcp_servers] config registers the
+	// server for background connectivity only — its tools are NOT passed to the
+	// model's tool schema. Only [plugins] (built-in curated apps) reach gpt-5.4-mini.
+	// Codex cannot proactively call send_message until a newer codex version exposes
+	// external MCP server tools to the model. Re-enable when codex > 0.135.0 ships
+	// that capability.
+	t.Skip("codex v0.135.0: external MCP server tools not in model schema — re-enable when codex exposes [mcp_servers] tools to model")
 	t.Cleanup(func() {
 		teardownAgent(t, cfg, codexAgent)
 		teardownAgent(t, cfg, claudeAgent)
