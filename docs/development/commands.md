@@ -8,4 +8,4 @@ make tools
 ### Debug commands 
 
 - View Environment 
-systemctl show omni@root --property=Environment
+systemctl --user show omni --property=Environment

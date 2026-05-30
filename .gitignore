@@ -1,6 +1,7 @@
 .env
 .claude
 .codex
+!development/local.example/.codex/
 .gemini
 .antigravitycli
 agent[-_]*.md
