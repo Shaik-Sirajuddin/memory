@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Shaik-Sirajuddin/memory/mcp/server/service"
+	"github.com/Shaik-Sirajuddin/memory/mcp/store/agents"
 	pkglog "github.com/Shaik-Sirajuddin/memory/pkg/log"
 )
 
@@ -135,9 +136,14 @@ func (p *ProxyServer) ListMessages(ctx context.Context, sender service.SenderSpe
 
 func (p *ProxyServer) ListAgents(ctx context.Context, sender service.SenderSpec) (*service.ListAgentsResponse, error) {
 	logger.Debug("proxy list_agents", "workspace", sender.Workspace)
-	var resp service.ListAgentsResponse
-	err := p.get(ctx, sender, "/list-agents", nil, &resp)
-	return &resp, err
+	var list []*agents.AgentInfo
+	if err := p.get(ctx, sender, "/list-agents", nil, &list); err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []*agents.AgentInfo{}
+	}
+	return &service.ListAgentsResponse{Agents: list, Count: len(list)}, nil
 }
 
 func (p *ProxyServer) ListTeams(ctx context.Context, sender service.SenderSpec) (*service.ListTeamsResponse, error) {
