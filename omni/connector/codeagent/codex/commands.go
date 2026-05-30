@@ -175,7 +175,7 @@ func bootstrapSession(workDir, binPath, model string, env []string) (string, err
 	// No -m flag here: we only need the thread_id, and some models (e.g. o4-mini)
 	// are unsupported for certain account types and would cause codex to exit
 	// before emitting the thread.started line.
-	args := []string{"exec", ".", "--json", "-C", workDir}
+	args := []string{"exec", ".", "--json", "--skip-git-repo-check", "-C", workDir}
 
 	logger.Info("bootstrapSession: running command", "bin", binPath, "args", args)
 
