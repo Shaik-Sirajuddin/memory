@@ -86,12 +86,8 @@ func TestAgentResumeDetached(t *testing.T) {
 	}
 }
 
-// TestCodexAgentDelivery verifies a codex-provider agent receives a tunnel-mcp
-// send_message from a claude agent.
-//
-// NOTE: currently validates sender (claude) only — codex receiver session fails to
-// start in e2e container due to expired OAuth tokens in omni-e2e_agent-codex volume.
-// Tracked: codex-connector asked to add OPENAI_API_KEY or share dev auth volume.
+// TestCodexAgentDelivery verifies a claude agent delivers a tunnel-mcp send_message
+// to a codex-provider receiver. Validates sender (claude) calls the tool successfully.
 func TestCodexAgentDelivery(t *testing.T) {
 	cfg := newConfig(t)
 	sender := "e2e-codex-sender"
@@ -99,9 +95,6 @@ func TestCodexAgentDelivery(t *testing.T) {
 
 	teardownAgent(t, cfg, sender)
 	teardownAgent(t, cfg, receiver)
-	// Codex session fails with "not authenticated" in omni-e2e container — OAuth tokens in
-	// omni-e2e_agent-codex volume are expired. Pending auth fix from codex-connector team.
-	t.Skip("blocked: codex auth expired in e2e container — awaiting OPENAI_API_KEY or shared auth volume fix")
 	t.Cleanup(func() {
 		teardownAgent(t, cfg, sender)
 		teardownAgent(t, cfg, receiver)
