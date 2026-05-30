@@ -1,10 +1,8 @@
 package agy
-
 import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -126,9 +124,11 @@ func (a *agyAgent) SetPTYClient(c codeagent.PTYClient) {
 
 func (a *agyAgent) Info() *codeagent.CodeAgentInfo { return &a.info }
 
-// GetUserIdentity checks login status via `agy auth status`.
-// Exit code 0 means authenticated; non-zero means not logged in.
+// GetUserIdentity checks login status.
+// TODO: agy CLI currently does not support an 'auth status' command.
+// The below code is commented out to prevent hanging the session by dropping into an interactive REPL.
 func (a *agyAgent) GetUserIdentity() codeagent.UserIdentify {
+	/*
 	a.mu.RLock()
 	binPath := a.binPath
 	workDir := a.workDir
@@ -147,6 +147,8 @@ func (a *agyAgent) GetUserIdentity() codeagent.UserIdentify {
 	identity := parseAuthStatus(raw)
 	logger.Debug("GetUserIdentity: authenticated", "email", identity.Email)
 	return identity
+	*/
+	return codeagent.UserIdentify{Authenticated: true}
 }
 
 // ============================================================
@@ -159,8 +161,8 @@ func (a *agyAgent) Capabilities() (*codeagent.Capabilities, error) {
 			PreToolUse:         true,
 			PostToolUse:        true,
 			PostToolUseFailure: true,
-			PreSessionStart:    true,
-			PostSessionStart:   true,
+			SessionStart:       true,
+			SessionEnd:         true,
 			PrePrompt:          true,
 			PostPrompt:         false,
 		},

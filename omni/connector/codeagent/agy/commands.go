@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
 	sandbox "github.com/Shaik-Sirajuddin/memory/sandbox/provider"
@@ -74,21 +75,30 @@ func (a *agyAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateSes
 	env := mergeEnv(os.Environ(), p.Envs)
 	a.mu.Unlock()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	// Verify binary.
-	out, err := captureOutputEnv(workDir, env, binPath, "--version")
+	cmdVer := exec.CommandContext(ctx, binPath, "--version")
+	cmdVer.Dir = workDir
+	cmdVer.Env = env
+	out, err := cmdVer.Output()
 	if err != nil {
 		return nil, fmt.Errorf("agy: create: binary unreachable: %w", err)
 	}
-	logger.Debug("Create: agy binary ok", "version", trimSpace(out))
-
+	logger.Debug("Create: agy binary ok", "version", trimSpace(string(out)))
+	
 	// Verify authentication.
-	authCmd := exec.Command(binPath, "auth", "status")
-	authCmd.Dir = workDir
+	// TODO: agy CLI currently does not support an 'auth status' command.
+	// The below code is commented out to prevent hanging the session by dropping into an interactive REPL.
+	/*
+	authCmd := exec.CommandContext(ctx, binPath, "auth", "status")
 	authCmd.Env = env
 	if err := authCmd.Run(); err != nil {
 		logger.Warn("Create: user not authenticated", "err", err)
 		return nil, fmt.Errorf("agy: create: not authenticated — run 'agy auth login' first")
 	}
+	*/
 
 	// When attaching to an existing session, skip seeding — the conversation
 	// already exists in Agy's store and a seed call would corrupt it.
@@ -177,7 +187,7 @@ func (a *agyAgent) Resume(p codeagent.ResumeSessionParams) (*codeagent.ResumeSes
 		command := append([]string{binPath}, args...)
 		started := false
 		if info == nil || info.Status != "active" {
-			if err := client.Start(resumeID, command, env, workDir); err != nil {
+			if err := client.Start(resumeID, command, env, workDir, submitKey); err != nil {
 				return nil, fmt.Errorf("agy: resume: pty start: %w", err)
 			}
 			started = true
