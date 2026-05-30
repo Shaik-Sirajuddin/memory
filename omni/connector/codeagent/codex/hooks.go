@@ -308,7 +308,26 @@ func ensureMCPApprovalMode(serverName string) error {
 	if server == nil {
 		server = map[string]interface{}{}
 	}
+
+	// Set server-level default.
 	server["default_tools_approval_mode"] = "auto"
+
+	// Override any per-tool entries that still have "approve" — they would
+	// block auto-approval even with the server-level default set to "auto".
+	if tools, ok := server["tools"].(map[string]interface{}); ok {
+		for toolName, toolVal := range tools {
+			toolCfg, ok := toolVal.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if toolCfg["approval_mode"] == "approve" {
+				toolCfg["approval_mode"] = "auto"
+				tools[toolName] = toolCfg
+			}
+		}
+		server["tools"] = tools
+	}
+
 	mcpServers[serverName] = server
 	raw["mcp_servers"] = mcpServers
 	return writeConfigTOML(path, raw)

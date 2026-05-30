@@ -84,8 +84,8 @@ func (a *codexAgent) Create(p codeagent.CreateSessionParams) (*codeagent.CreateS
 		logger.Warn("Create: could not sync model to config", "err", syncErr)
 	}
 
-	// Auto-approve tunnel-mcp tool calls so Codex never pauses for MCP approval.
-	if mcpErr := ensureMCPApprovalMode("tunnel-mcp"); mcpErr != nil {
+	// Auto-approve tunnel_mcp tool calls so Codex never pauses for MCP approval.
+	if mcpErr := ensureMCPApprovalMode("tunnel_mcp"); mcpErr != nil {
 		logger.Warn("Create: could not set MCP approval mode", "err", mcpErr)
 	}
 
