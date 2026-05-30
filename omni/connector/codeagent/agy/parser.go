@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent"
+	codeagentutils "github.com/Shaik-Sirajuddin/memory/connector/codeagent/utils"
 	"github.com/Shaik-Sirajuddin/memory/connector/codeagent/hooks"
 )
 
@@ -94,12 +95,12 @@ func (a *AgyParser) PostToolUseFailureParams(raw any) (*hooks.PostToolUseFailure
 	return parseHookInput[hooks.PostToolUseFailureParams](raw)
 }
 
-func (a *AgyParser) PreSessionStartParams(raw any) (*hooks.PreSessionStartParams, error) {
-	return parseHookInput[hooks.PreSessionStartParams](raw)
+func (a *AgyParser) SessionStartParams(raw any) (*hooks.SessionStartParams, error) {
+	return parseHookInput[hooks.SessionStartParams](raw)
 }
 
-func (a *AgyParser) PostSessionStartParams(raw any) (*hooks.PostSessionStartParams, error) {
-	return parseHookInput[hooks.PostSessionStartParams](raw)
+func (a *AgyParser) SessionEndParams(raw any) (*hooks.SessionEndParams, error) {
+	return parseHookInput[hooks.SessionEndParams](raw)
 }
 
 func (a *AgyParser) PrePromptInputParams(raw any) (*hooks.PrePromptInputParams, error) {
@@ -122,12 +123,12 @@ func (a *AgyParser) PostToolUseFailureResult(raw any) (*hooks.PostToolUseFailure
 	return parseHookInput[hooks.PostToolUseFailureResult](raw)
 }
 
-func (a *AgyParser) PreSessionStartResult(raw any) (*hooks.PreSessionStartResult, error) {
-	return parseHookInput[hooks.PreSessionStartResult](raw)
+func (a *AgyParser) SessionStartResult(raw any) (*hooks.SessionStartResult, error) {
+	return parseHookInput[hooks.SessionStartResult](raw)
 }
 
-func (a *AgyParser) PostSessionStartResult(raw any) (*hooks.PostSessionStartResult, error) {
-	return parseHookInput[hooks.PostSessionStartResult](raw)
+func (a *AgyParser) SessionEndResult(raw any) (*hooks.SessionEndResult, error) {
+	return parseHookInput[hooks.SessionEndResult](raw)
 }
 
 func (a *AgyParser) PrePromptInputResult(raw any) (*hooks.PrePromptInputResult, error) {
@@ -187,6 +188,9 @@ func lookPath(name string) (string, error) {
 		if path, err := exec.LookPath(candidate); err == nil {
 			return path, nil
 		}
+	}
+	if path, err := codeagentutils.LookPathNVM(name); err == nil {
+		return path, nil
 	}
 	return exec.LookPath(name)
 }
