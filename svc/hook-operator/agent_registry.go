@@ -31,7 +31,11 @@ func (ar *agentRegistry) init() {
 		codex.Codex:  codex.NewHookTransformer(),
 	}
 	for provider, transformer := range providers {
-		_ = ar.reg.apply(transformer)
+		if err := ar.reg.apply(transformer); err != nil {
+			logger.Error("hook-operator: agent registry: apply failed", "provider", provider, "err", err)
+			continue
+		}
+		logger.Info("hook-operator: agent registry: hooks registered", "provider", provider)
 		ar.transformers[provider] = transformer
 	}
 }
