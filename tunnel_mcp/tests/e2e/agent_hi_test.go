@@ -130,11 +130,14 @@ func TestMessageRefsIntegrity(t *testing.T) {
 
 var (
 	rePanic = regexp.MustCompile(`(?im)panic:|fatal error:`)
-	// Known pre-existing server issues — suppressed so tests only catch new regressions:
-	//   agent_id="":           engine receives exec messages whose agent ID cannot be resolved.
-	//   SQLITE_BUSY:           hook-operator and message processor contend on the SQLite db.
+	// Known pre-existing server issues — suppressed so tests only catch new regressions.
+	// Each entry must be removed once the underlying bug is fixed:
+	//   agent_id="":           engine receives exec messages whose agent ID cannot be resolved
+	//                          (tracked: server-bugs.md #2).
+	//   SQLITE_BUSY:           hook-operator and message processor contend on the SQLite db;
+	//                          remove once busy_timeout pragma is added (server-bugs.md #1).
 	//   runtime create failed: gvisor (runsc) not installed in the e2e container; sandbox
-	//                          provision always fails but agent still starts without sandbox.
+	//                          provision always fails but agent still starts without it.
 	reKnownNoise = regexp.MustCompile(`agent_id=""|SQLITE_BUSY|runtime create failed.*sandbox=gvisor`)
 )
 

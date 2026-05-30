@@ -20,7 +20,7 @@ type testConfig struct {
 func newConfig(t *testing.T) testConfig {
 	t.Helper()
 	target := envOr("E2E_TARGET", "docker")
-	ctr := envOr("E2E_CONTAINER", "omni-e2e-ubuntu-1")
+	ctr := envOr("E2E_CONTAINER", "omni-dev")
 
 	var ex CommandExecutor
 	switch target {

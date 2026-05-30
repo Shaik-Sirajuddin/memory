@@ -85,11 +85,10 @@ func newDockerExecutor(t *testing.T, containerName string) *DockerExecutor {
 	// Build exec env: forward only the vars needed by the omni CLI.
 	// Do NOT seed from info.Config.Env — that includes API keys from the .env.docker
 	// file and would forward them to every subprocess spawned by docker exec.
+	// Paths must match development/docker/entrypoint.sh.
 	env := []string{
-		// Socket paths written by /etc/profile.d/omni-sockets.sh — not sourced by docker exec.
-		"XDG_RUNTIME_DIR=/run/user/0",
-		"OMNI_PTY_SOCKET=/run/user/0/omni/omni-pty.sock",
-		"HOOK_OPERATOR_SOCKET=/run/user/0/omni/hook-operator.sock",
+		"OMNI_PTY_SOCKET=/run/omni-root/omni-pty.sock",
+		"HOOK_OPERATOR_SOCKET=/run/omni-root/hook-operator.sock",
 	}
 	return &DockerExecutor{cli: cli, container: containerName, env: env}
 }
